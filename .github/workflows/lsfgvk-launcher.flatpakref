@@ -1,0 +1,7 @@
+[Flatpak Ref]
+Title=LSFG-VK Launcher
+Name=io.reaven.LSFGVKLauncher
+Branch=stable
+Url=https://0xreaven.github.io/lsfgvk-launcher/repo
+IsRuntime=false
+RuntimeRepo=https://flathub.org/repo/flathakpakrepo
