@@ -43,42 +43,47 @@ jobs:
         run: |
           bash scripts/make_flatpakref.sh
 
-      - name: Copy web assets + friendly alias
+      - name: Copy web assets + friendly alias (no heredoc)
+        shell: bash
         run: |
+          set -e
           mkdir -p web/repo web/icons
           rsync -a repo/ web/repo/
-          # icône
+
+          # icon
           if [ -f icons/hicolor/128x128/apps/io.reaven.LSFGVKLauncher.png ]; then
             cp icons/hicolor/128x128/apps/io.reaven.LSFGVKLauncher.png web/icons/io.reaven.LSFGVKLauncher.png
           else
             inkscape icons/io.reaven.LSFGVKLauncher.svg --export-type=png \
               --export-filename=web/icons/io.reaven.LSFGVKLauncher.png --export-width=128 --export-height=128
           fi
-          # alias .flatpakref simple
-          cat > web/lsfgvk-launcher.flatpakref <<'EOF'
-[Flatpak Ref]
-Title=LSFG-VK Launcher
-Name=io.reaven.LSFGVKLauncher
-Branch=stable
-Url=https://0xreaven.github.io/lsfgvk-launcher/repo
-IsRuntime=false
-RuntimeRepo=https://flathub.org/repo/flathub.flatpakrepo
-EOF
-          # page d’accueil avec bouton 1-clic
-          cat > web/index.html <<'EOF'
-<!doctype html><meta charset="utf-8">
-<title>Reaven Flatpak Repo</title>
-<style>
-body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,Inter,Arial,sans-serif;max-width:720px;margin:5rem auto;padding:0 1rem;line-height:1.5}
-a.button{display:inline-block;padding:.9rem 1.1rem;border-radius:10px;text-decoration:none;border:1px solid #ccc}
-h1{margin-bottom:.3rem}
-small{color:#666}
-</style>
-<h1>LSFG-VK Launcher</h1>
-<p>One-click install (Flatpak ref):</p>
-<p><a class="button" href="lsfgvk-launcher.flatpakref">Install .flatpakref</a></p>
-<p><small>Repo URL: <code>https://0xreaven.github.io/lsfgvk-launcher/repo</code></small></p>
-EOF
+
+          # flatpakref alias
+          printf '%s\n' \
+            '[Flatpak Ref]' \
+            'Title=LSFG-VK Launcher' \
+            'Name=io.reaven.LSFGVKLauncher' \
+            'Branch=stable' \
+            'Url=https://0xreaven.github.io/lsfgvk-launcher/repo' \
+            'IsRuntime=false' \
+            'RuntimeRepo=https://flathub.org/repo/flathub.flatpakrepo' \
+            > web/lsfgvk-launcher.flatpakref
+
+          # landing page
+          printf '%s\n' \
+            '<!doctype html><meta charset="utf-8">' \
+            '<title>Reaven Flatpak Repo</title>' \
+            '<style>' \
+            'body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,Inter,Arial,sans-serif;max-width:720px;margin:5rem auto;padding:0 1rem;line-height:1.5}' \
+            'a.button{display:inline-block;padding:.9rem 1.1rem;border-radius:10px;text-decoration:none;border:1px solid #ccc}' \
+            'h1{margin-bottom:.3rem}' \
+            'small{color:#666}' \
+            '</style>' \
+            '<h1>LSFG-VK Launcher</h1>' \
+            '<p>One-click install (Flatpak ref):</p>' \
+            '<p><a class="button" href="lsfgvk-launcher.flatpakref">Install .flatpakref</a></p>' \
+            '<p><small>Repo URL: <code>https://0xreaven.github.io/lsfgvk-launcher/repo</code></small></p>' \
+            > web/index.html
 
       - name: Deploy to GitHub Pages
         uses: peaceiris/actions-gh-pages@v3
