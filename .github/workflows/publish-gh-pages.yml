@@ -16,19 +16,18 @@ jobs:
           sudo apt-get install -y flatpak flatpak-builder xz-utils imagemagick inkscape rsync
           flatpak --version
 
-      # 👉 Ajoute Flathub en user et en system (ceinture + bretelles)
-      - name: Add Flathub remotes
+      # Ajoute Flathub en --user (même scope partout)
+      - name: Add Flathub remote (user)
         run: |
-          flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo || true
-          flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo || true
-          flatpak remotes
+          flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+          flatpak remotes --user
 
-      # 👉 Pré-installe les runtimes GNOME 47 côté utilisateur
+      # Pré-installe SDK/Platform GNOME 47 en --user
       - name: Install GNOME 47 SDK/Platform (user)
         run: |
           flatpak install -y --user --noninteractive flathub org.gnome.Sdk//47 org.gnome.Platform//47
 
-      # Build & export vers repo/  (ton script utilise --install-deps-from=flathub)
+      # Build & export repo (script déjà en --user)
       - name: Build & export repo
         run: |
           bash scripts/build_and_export.sh
@@ -56,7 +55,6 @@ jobs:
           <p><a href=\"io.reaven.LSFGVKLauncher.flatpakref\">Install LSFG-VK Launcher</a></p>
           </body></html>" > web/index.html
 
-      # Déploiement sur gh-pages
       - name: Deploy to GitHub Pages
         uses: peaceiris/actions-gh-pages@v3
         with:
