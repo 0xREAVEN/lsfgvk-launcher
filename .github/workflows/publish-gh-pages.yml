@@ -56,9 +56,11 @@ jobs:
             'Url=https://0xreaven.github.io/lsfgvk-launcher/repo' \
             'IsRuntime=false' \
             'RuntimeRepo=https://flathub.org/repo/flathub.flatpakrepo' \
+            'NoGPGVerify=true' \
             > web/io.reaven.LSFGVKLauncher.flatpakref
           # alias simple
           cp web/io.reaven.LSFGVKLauncher.flatpakref web/lsfgvk-launcher.flatpakref
+
 
       - name: Create landing page
         run: |
