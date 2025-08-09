@@ -1,11 +1,7 @@
 [Flatpak Ref]
+Title=LSFG-VK Launcher
 Name=io.reaven.LSFGVKLauncher
 Branch=stable
-Title=LSFG-VK Launcher
-Comment=Launch Flatpak & host apps with lsfg-vk frame generation
-Description=GTK4/Libadwaita launcher for running applications with Lossless Scaling Frame Generation (lsfg-vk).
-Homepage=https://0xreaven.github.io/lsfgvk-launcher
-Icon=https://0xreaven.github.io/lsfgvk-launcher/icons/io.reaven.LSFGVKLauncher.png
-IsRuntime=false
 Url=https://0xreaven.github.io/lsfgvk-launcher/repo
+IsRuntime=false
 RuntimeRepo=https://flathub.org/repo/flathub.flatpakrepo
