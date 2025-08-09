@@ -4,6 +4,12 @@ on:
     branches: [ main ]
   workflow_dispatch: {}
 
+# 👉 Donne les droits d’écriture au GITHUB_TOKEN pour pousser sur gh-pages
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
 jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
@@ -16,18 +22,15 @@ jobs:
           sudo apt-get install -y flatpak flatpak-builder xz-utils imagemagick inkscape rsync
           flatpak --version
 
-      # Ajoute Flathub en --user (même scope partout)
       - name: Add Flathub remote (user)
         run: |
           flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
           flatpak remotes --user
 
-      # Pré-installe SDK/Platform GNOME 47 en --user
       - name: Install GNOME 47 SDK/Platform (user)
         run: |
           flatpak install -y --user --noninteractive flathub org.gnome.Sdk//47 org.gnome.Platform//47
 
-      # Build & export repo (script déjà en --user)
       - name: Build & export repo
         run: |
           bash scripts/build_and_export.sh
