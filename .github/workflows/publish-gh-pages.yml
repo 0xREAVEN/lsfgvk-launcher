@@ -4,7 +4,6 @@ on:
     branches: [ main ]
   workflow_dispatch: {}
 
-# 👉 Donne les droits d’écriture au GITHUB_TOKEN pour pousser sur gh-pages
 permissions:
   contents: write
   pages: write
@@ -35,28 +34,51 @@ jobs:
         run: |
           bash scripts/build_and_export.sh
 
-      - name: Make .flatpakref
+      - name: Make .flatpakref (canonical)
         env:
           APP_ID: io.reaven.LSFGVKLauncher
-          HOMEPAGE: https://0xREAVEN.github.io/lsfgvk-launcher
-          ICON_URL: https://0xREAVEN.github.io/lsfgvk-launcher/icons/io.reaven.LSFGVKLauncher.png
-          REPO_URL: https://0xREAVEN.github.io/lsfgvk-launcher/repo
+          HOMEPAGE: https://0xreaven.github.io/lsfgvk-launcher
+          ICON_URL: https://0xreaven.github.io/lsfgvk-launcher/icons/io.reaven.LSFGVKLauncher.png
+          REPO_URL: https://0xreaven.github.io/lsfgvk-launcher/repo
         run: |
           bash scripts/make_flatpakref.sh
 
-      - name: Copy web assets
+      - name: Copy web assets + friendly alias
         run: |
           mkdir -p web/repo web/icons
           rsync -a repo/ web/repo/
+          # icône
           if [ -f icons/hicolor/128x128/apps/io.reaven.LSFGVKLauncher.png ]; then
             cp icons/hicolor/128x128/apps/io.reaven.LSFGVKLauncher.png web/icons/io.reaven.LSFGVKLauncher.png
           else
             inkscape icons/io.reaven.LSFGVKLauncher.svg --export-type=png \
               --export-filename=web/icons/io.reaven.LSFGVKLauncher.png --export-width=128 --export-height=128
           fi
-          echo "<html><body><h1>Reaven Flatpak Repo</h1>
-          <p><a href=\"io.reaven.LSFGVKLauncher.flatpakref\">Install LSFG-VK Launcher</a></p>
-          </body></html>" > web/index.html
+          # alias .flatpakref simple
+          cat > web/lsfgvk-launcher.flatpakref <<'EOF'
+[Flatpak Ref]
+Title=LSFG-VK Launcher
+Name=io.reaven.LSFGVKLauncher
+Branch=stable
+Url=https://0xreaven.github.io/lsfgvk-launcher/repo
+IsRuntime=false
+RuntimeRepo=https://flathub.org/repo/flathub.flatpakrepo
+EOF
+          # page d’accueil avec bouton 1-clic
+          cat > web/index.html <<'EOF'
+<!doctype html><meta charset="utf-8">
+<title>Reaven Flatpak Repo</title>
+<style>
+body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,Inter,Arial,sans-serif;max-width:720px;margin:5rem auto;padding:0 1rem;line-height:1.5}
+a.button{display:inline-block;padding:.9rem 1.1rem;border-radius:10px;text-decoration:none;border:1px solid #ccc}
+h1{margin-bottom:.3rem}
+small{color:#666}
+</style>
+<h1>LSFG-VK Launcher</h1>
+<p>One-click install (Flatpak ref):</p>
+<p><a class="button" href="lsfgvk-launcher.flatpakref">Install .flatpakref</a></p>
+<p><small>Repo URL: <code>https://0xreaven.github.io/lsfgvk-launcher/repo</code></small></p>
+EOF
 
       - name: Deploy to GitHub Pages
         uses: peaceiris/actions-gh-pages@v3
