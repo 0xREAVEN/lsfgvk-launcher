@@ -14,6 +14,7 @@ flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/fl
 # Build en user (et friendly CI/distrobox)
 flatpak-builder --user --disable-rofiles-fuse --force-clean \
   --install-deps-from=flathub \
+  --default-branch=stable \
   --repo="${REPO_DIR}" \
   "${BUILD_DIR}" "${MANIFEST}"
 
