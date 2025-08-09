@@ -8,9 +8,11 @@ BUILD_DIR=${BUILD_DIR:-build}
 REPO_DIR=${REPO_DIR:-repo}
 TITLE=${TITLE:-"Reaven Flatpak Repo"}
 
-flatpak remote-add --user --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo || true
+# Remote Flathub en user
+flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo || true
 
-flatpak-builder --force-clean \
+# Build en user (et friendly CI/distrobox)
+flatpak-builder --user --disable-rofiles-fuse --force-clean \
   --install-deps-from=flathub \
   --repo="${REPO_DIR}" \
   "${BUILD_DIR}" "${MANIFEST}"
