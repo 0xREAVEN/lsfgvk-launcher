@@ -1,0 +1,9 @@
+# Flatpak builder dirs
+build/
+build-dir/
+.web/
+.flatpak-builder/
+# Local export
+repo/
+# Python cache if any
+__pycache__/

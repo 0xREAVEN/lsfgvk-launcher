@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.reaven.LSFGVKLauncher</id>
+  <name>LSFG‑VK Launcher</name>
+  <summary>Launch Flatpak and host apps with Lossless Scaling frame‑gen (lsfg‑vk)</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+  <description>
+    <p>A minimal GTK4/Libadwaita launcher that starts other Flatpaks and host apps with the proper lsfg‑vk environment variables (multiplier, flow scale, performance mode, HDR and present mode override).</p>
+  </description>
+  <launchable type="desktop-id">io.reaven.LSFGVKLauncher.desktop</launchable>
+  <releases>
+    <release version="0.2.0" date="2025-08-09">
+      <description>
+        <p>Add host apps support; icon pack; distribution helpers.</p>
+      </description>
+    </release>
+  </releases>
+  <developer_name>Reaven</developer_name>
+</component>

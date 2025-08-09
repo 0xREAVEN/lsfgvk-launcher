@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=LSFG-VK Launcher
+Comment=Launch Flatpak and host apps with lsfg-vk (frame generation)
+Exec=lsfgvk-launcher
+Icon=io.reaven.LSFGVKLauncher
+Categories=Utility;Game;

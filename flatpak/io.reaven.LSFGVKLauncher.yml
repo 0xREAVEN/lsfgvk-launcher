@@ -1,0 +1,30 @@
+app-id: io.reaven.LSFGVKLauncher
+runtime: org.gnome.Platform
+runtime-version: "47"
+sdk: org.gnome.Sdk
+command: lsfgvk-launcher
+finish-args:
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --share=network
+  - --talk-name=org.freedesktop.Flatpak
+modules:
+  - name: app
+    buildsystem: simple
+    build-commands:
+      - install -Dm755 app/lsfgvk_launcher.py /app/bin/lsfgvk_launcher.py
+      - install -Dm755 app/lsfgvk-launcher /app/bin/lsfgvk-launcher
+      - install -Dm644 app/io.reaven.LSFGVKLauncher.desktop /app/share/applications/io.reaven.LSFGVKLauncher.desktop
+      - install -Dm644 flatpak/io.reaven.LSFGVKLauncher.metainfo.xml /app/share/metainfo/io.reaven.LSFGVKLauncher.metainfo.xml
+      - install -Dm644 icons/io.reaven.LSFGVKLauncher.svg /app/share/icons/hicolor/scalable/apps/io.reaven.LSFGVKLauncher.svg
+      - install -Dm644 icons/hicolor/512x512/apps/io.reaven.LSFGVKLauncher.png /app/share/icons/hicolor/512x512/apps/io.reaven.LSFGVKLauncher.png
+      - install -Dm644 icons/hicolor/256x256/apps/io.reaven.LSFGVKLauncher.png /app/share/icons/hicolor/256x256/apps/io.reaven.LSFGVKLauncher.png
+      - install -Dm644 icons/hicolor/128x128/apps/io.reaven.LSFGVKLauncher.png /app/share/icons/hicolor/128x128/apps/io.reaven.LSFGVKLauncher.png
+      - install -Dm644 icons/hicolor/64x64/apps/io.reaven.LSFGVKLauncher.png  /app/share/icons/hicolor/64x64/apps/io.reaven.LSFGVKLauncher.png
+      - install -Dm644 icons/hicolor/48x48/apps/io.reaven.LSFGVKLauncher.png  /app/share/icons/hicolor/48x48/apps/io.reaven.LSFGVKLauncher.png
+      - install -Dm644 icons/hicolor/32x32/apps/io.reaven.LSFGVKLauncher.png  /app/share/icons/hicolor/32x32/apps/io.reaven.LSFGVKLauncher.png
+      - install -Dm644 icons/hicolor/24x24/apps/io.reaven.LSFGVKLauncher.png  /app/share/icons/hicolor/24x24/apps/io.reaven.LSFGVKLauncher.png
+      - install -Dm644 icons/hicolor/16x16/apps/io.reaven.LSFGVKLauncher.png  /app/share/icons/hicolor/16x16/apps/io.reaven.LSFGVKLauncher.png
+    sources:
+      - type: dir
+        path: ..
