@@ -16,11 +16,19 @@ jobs:
           sudo apt-get install -y flatpak flatpak-builder xz-utils imagemagick inkscape rsync
           flatpak --version
 
-      - name: Prepare SDK/Platform
+      # 👉 Ajoute Flathub en user et en system (ceinture + bretelles)
+      - name: Add Flathub remotes
         run: |
-          flatpak remote-add --user --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
-          flatpak install -y --user flathub org.gnome.Sdk//46 org.gnome.Platform//46
+          flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo || true
+          flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo || true
+          flatpak remotes
 
+      # 👉 Pré-installe les runtimes GNOME 47 côté utilisateur
+      - name: Install GNOME 47 SDK/Platform (user)
+        run: |
+          flatpak install -y --user --noninteractive flathub org.gnome.Sdk//47 org.gnome.Platform//47
+
+      # Build & export vers repo/  (ton script utilise --install-deps-from=flathub)
       - name: Build & export repo
         run: |
           bash scripts/build_and_export.sh
@@ -41,10 +49,14 @@ jobs:
           if [ -f icons/hicolor/128x128/apps/io.reaven.LSFGVKLauncher.png ]; then
             cp icons/hicolor/128x128/apps/io.reaven.LSFGVKLauncher.png web/icons/io.reaven.LSFGVKLauncher.png
           else
-            inkscape icons/io.reaven.LSFGVKLauncher.svg --export-type=png --export-filename=web/icons/io.reaven.LSFGVKLauncher.png --export-width=128 --export-height=128
+            inkscape icons/io.reaven.LSFGVKLauncher.svg --export-type=png \
+              --export-filename=web/icons/io.reaven.LSFGVKLauncher.png --export-width=128 --export-height=128
           fi
-          echo "<html><body><h1>Reaven Flatpak Repo</h1><p><a href=\"io.reaven.LSFGVKLauncher.flatpakref\">Install LSFG-VK Launcher</a></p></body></html>" > web/index.html
+          echo "<html><body><h1>Reaven Flatpak Repo</h1>
+          <p><a href=\"io.reaven.LSFGVKLauncher.flatpakref\">Install LSFG-VK Launcher</a></p>
+          </body></html>" > web/index.html
 
+      # Déploiement sur gh-pages
       - name: Deploy to GitHub Pages
         uses: peaceiris/actions-gh-pages@v3
         with:
