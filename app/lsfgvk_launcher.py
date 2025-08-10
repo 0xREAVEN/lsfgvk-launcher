@@ -1,326 +1,385 @@
 #!/usr/bin/env python3
-import gi, subprocess, shlex
+# -*- coding: utf-8 -*-
 
+import sys
+import shlex
+import subprocess
+from dataclasses import dataclass
+from typing import List, Tuple, Optional
+
+import gi
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
-from gi.repository import Gtk, Adw, Gio
+from gi.repository import Gtk, Adw, Gio, GLib
+
 
 APP_ID = "io.reaven.LSFGVKLauncher"
 
-class FlatpakApp:
-    def __init__(self, app_id: str, name: str, branch: str):
-        self.app_id = app_id
-        self.name = name
-        self.branch = branch
+
+# ----------------------------- helpers -----------------------------
+
+def run_host_command(args: List[str]) -> Tuple[int, str, str]:
+    """
+    Run a command on the host using flatpak-spawn --host.
+    Return (exit_code, stdout, stderr).
+    """
+    full = ["flatpak-spawn", "--host"] + args
+    try:
+        proc = subprocess.run(full, capture_output=True, text=True, check=False)
+        return proc.returncode, proc.stdout.strip(), proc.stderr.strip()
+    except Exception as e:
+        return 1, "", str(e)
+
+
+def list_installed_flatpaks() -> List[str]:
+    """
+    Returns a list of installed app IDs (on the host) using `flatpak list`.
+    """
+    code, out, err = run_host_command(
+        ["flatpak", "list", "--app", "--columns=application"]
+    )
+    if code != 0:
+        return []
+    apps = [line.strip() for line in out.splitlines() if line.strip()]
+    # remove duplicates while preserving order
+    seen = set()
+    uniq = []
+    for a in apps:
+        if a not in seen:
+            uniq.append(a)
+            seen.add(a)
+    return uniq
+
+
+def join_shell_cmd(parts: List[str]) -> str:
+    """
+    Human-friendly shell join (for preview)
+    """
+    return " ".join(shlex.quote(p) for p in parts)
+
+
+# ----------------------------- UI rows helpers -----------------------------
+
+def add_rows(page: Adw.PreferencesPage, title: Optional[str], *rows: Adw.ActionRow) -> Adw.PreferencesGroup:
+    """
+    Create a PreferencesGroup, add the given rows, then add the group to the page.
+    Return the created group.
+    """
+    group = Adw.PreferencesGroup(title=title) if title else Adw.PreferencesGroup()
+    for r in rows:
+        group.add(r)
+    page.add(group)
+    return group
+
+
+# ----------------------------- dataclass model -----------------------------
+
+@dataclass
+class LSFGOptions:
+    multiplier: str = "2"        # 2/3/4/6/8
+    flow_scale: bool = False
+    performance: bool = False
+    hdr: bool = False
+    present_mode: str = "auto"   # auto/fifo/mailbox/immediate
+    lsfg_process: str = ""       # optional
+    extra_args: str = ""         # appended to target command
+
+
+# ----------------------------- Main Window -----------------------------
 
 class MainWindow(Adw.ApplicationWindow):
-    def __init__(self, app):
+    def __init__(self, app: Adw.Application):
         super().__init__(application=app)
-        self.set_title("LSFG‑VK Launcher")
-        self.set_default_size(920, 560)
+        self.set_default_size(900, 620)
+        self.set_title("LSFG-VK Launcher")
 
-        self.flatpaks = []
-        self._filtered = []
-        self.selected_app = None
+        self.options = LSFGOptions()
 
-        self._host_candidates = []
-        self._filtered_host = []
-        self.selected_host_cmd = None
+        # view stack + switcher
+        self.stack = Adw.ViewStack()
 
-        self._build_ui()
-        self._load_flatpaks()
+        # pages
+        self.page_flatpak = self._build_flatpak_page()
+        self.page_host    = self._build_host_page()
+        self.page_opts    = self._build_options_page()
+        self.page_help    = self._build_help_page()
 
-    # ---------- UI ----------
-    def _build_ui(self):
-        self.toast_overlay = Adw.ToastOverlay()
-        self.set_content(self.toast_overlay)
+        self.stack.add_titled(self.page_flatpak, "flatpak", "Flatpak")
+        self.stack.add_titled(self.page_host,    "host",    "Host")
+        self.stack.add_titled(self.page_opts,    "options", "Options")
+        self.stack.add_titled(self.page_help,    "help",    "Help")
 
+        # toolbar + headerbar + switcherbar
+        self.toolbar = Adw.ToolbarView()
         header = Adw.HeaderBar()
-        header.set_title_widget(Adw.WindowTitle(title="LSFG‑VK Launcher", subtitle="Run Flatpak & Host apps with frame‑gen"))
+        self.toolbar.add_top_bar(header)
 
-        self.btn_preview = Gtk.Button(label="Preview command")
-        self.btn_preview.connect("clicked", self.on_preview)
-        header.pack_start(self.btn_preview)
+        switcher_bar = Adw.ViewSwitcherBar()
+        switcher_bar.set_stack(self.stack)
+        self.toolbar.add_bottom_bar(switcher_bar)
 
-        self.btn_launch = Gtk.Button(label="Launch")
-        self.btn_launch.add_css_class("suggested-action")
-        self.btn_launch.connect("clicked", self.on_launch)
-        header.pack_end(self.btn_launch)
+        # bottom action area (Preview / Launch + preview text)
+        bottom_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8, margin_top=8, margin_bottom=8, margin_start=12, margin_end=12)
 
-        root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
-        root.append(header)
+        btn_box = Gtk.Box(spacing=8)
+        self.btn_preview = Gtk.Button(label="Preview")
+        self.btn_launch  = Gtk.Button(label="Launch")
+        self.btn_preview.connect("clicked", self.on_preview_clicked)
+        self.btn_launch.connect("clicked", self.on_launch_clicked)
+        btn_box.append(self.btn_preview)
+        btn_box.append(self.btn_launch)
 
-        content = Gtk.Paned.new(Gtk.Orientation.HORIZONTAL)
-        root.append(content)
+        self.preview_view = Gtk.TextView(editable=False, monospace=True, wrap_mode=Gtk.WrapMode.CHAR)
+        self.preview_buf  = self.preview_view.get_buffer()
+        self.preview_view.set_size_request(-1, 100)
+        bottom_box.append(btn_box)
+        bottom_box.append(self.preview_view)
 
-        self.toast_overlay.set_child(root)
+        # compose main content
+        main_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        main_box.append(self.stack)
+        main_box.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
+        main_box.append(bottom_box)
 
-        # Left: target picker via a Notebook (Flatpak / Host)
-        left_notebook = Adw.ViewStack()
-        left_switcher = Adw.ViewSwitcherBar()
-        left_switcher.set_stack(left_notebook)
+        self.toolbar.set_content(main_box)
+        self.set_content(self.toolbar)
 
-        # --- Flatpak page ---
-        vfp = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8, margin_top=12, margin_bottom=12, margin_start=12, margin_end=12)
-        self.search_fp = Gtk.SearchEntry(placeholder_text="Search installed Flatpaks…")
-        self.search_fp.connect("search-changed", lambda *_: self._apply_filter_flatpak())
-        vfp.append(self.search_fp)
+        # initial load
+        GLib.idle_add(self._reload_flatpak_list)
 
-        self.store_fp = Gtk.StringList()
-        self.listview_fp = Gtk.ListView.new(Gtk.SingleSelection.new(self.store_fp), Gtk.SignalListItemFactory.new())
+    # ------------------- Flatpak page -------------------
 
-        def setup_fp(_factory, listitem):
-            box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2, margin_top=6, margin_bottom=6, margin_start=6, margin_end=6)
-            title = Gtk.Label(xalign=0); title.add_css_class("title-4")
-            subtitle = Gtk.Label(xalign=0); subtitle.add_css_class("dim-label"); subtitle.set_wrap(True)
-            box.append(title); box.append(subtitle)
-            listitem.set_child(box)
+    def _build_flatpak_page(self) -> Adw.PreferencesPage:
+        page = Adw.PreferencesPage()
 
-        def bind_fp(_factory, listitem):
-            idx = listitem.get_position()
-            if idx < 0 or idx >= len(self._filtered):
-                return
-            app = self._filtered[idx]
-            box = listitem.get_child(); labels = box.get_children()
-            labels[0].set_text(app.name or app.app_id)
-            labels[1].set_text(f"{app.app_id} — {app.branch}")
+        # app selector
+        self.flatpak_model = Gtk.StringList.new([])
+        self.flatpak_combo = Adw.ComboRow(title="Application", subtitle="Choose an installed Flatpak", model=self.flatpak_model)
+        self.btn_refresh = Gtk.Button.new_from_icon_name("view-refresh-symbolic")
+        self.btn_refresh.set_tooltip_text("Refresh list")
+        self.btn_refresh.connect("clicked", lambda *_: self._reload_flatpak_list())
+        self.flatpak_combo.add_suffix(self.btn_refresh)
+        self.flatpak_combo.set_use_subtitle(True)
 
-        factory_fp = self.listview_fp.get_factory()
-        factory_fp.connect("setup", setup_fp)
-        factory_fp.connect("bind", bind_fp)
-        self.listview_fp.connect("activate", self.on_pick_flatpak)
-        vfp.append(self.listview_fp)
+        # extra args
+        self.flatpak_args = Adw.EntryRow(title="Extra arguments", text="")
+        self.flatpak_args.set_show_apply_button(False)
+        self.flatpak_args.set_placeholder_text("--fullscreen  (example)")
 
-        # --- Host page ---
-        vh = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8, margin_top=12, margin_bottom=12, margin_start=12, margin_end=12)
-        host_bar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-        self.search_host = Gtk.SearchEntry(placeholder_text="Search host commands (type to fetch)…")
-        self.search_host.connect("search-changed", self.on_host_search)
-        host_bar.append(self.search_host)
-        self.btn_fetch_host = Gtk.Button(label="Index host commands")
-        self.btn_fetch_host.connect("clicked", lambda *_: self._load_host_cmds(force=True))
-        host_bar.append(self.btn_fetch_host)
-        vh.append(host_bar)
+        add_rows(page, "Flatpak target", self.flatpak_combo, self.flatpak_args)
+        return page
 
-        self.store_host = Gtk.StringList()
-        self.listview_host = Gtk.ListView.new(Gtk.SingleSelection.new(self.store_host), Gtk.SignalListItemFactory.new())
+    def _reload_flatpak_list(self):
+        apps = list_installed_flatpaks()
+        self.flatpak_model.splice(0, self.flatpak_model.get_n_items(), apps)
+        if apps:
+            self.flatpak_combo.set_selected(0)
 
-        def setup_h(_factory, listitem):
-            listitem.set_child(Gtk.Label(xalign=0))
-        def bind_h(_factory, listitem):
-            idx = listitem.get_position()
-            if 0 <= idx < len(self._filtered_host):
-                listitem.get_child().set_text(self._filtered_host[idx])
-        factory_h = self.listview_host.get_factory()
-        factory_h.connect("setup", setup_h)
-        factory_h.connect("bind", bind_h)
-        self.listview_host.connect("activate", self.on_pick_host)
-        vh.append(self.listview_host)
+    # ------------------- Host page -------------------
 
-        left_notebook.add_titled(vfp, "flatpak", "Flatpak Apps")
-        left_notebook.add_titled(vh, "host", "Host Apps")
+    def _build_host_page(self) -> Adw.PreferencesPage:
+        page = Adw.PreferencesPage()
 
-        left_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-        left_box.append(left_notebook)
-        left_box.append(left_switcher)
+        self.host_cmd = Adw.EntryRow(title="Command", text="")
+        self.host_cmd.set_placeholder_text("e.g. vlc  or  /usr/bin/retroarch")
+        self.host_args = Adw.EntryRow(title="Extra arguments", text="")
+        self.host_args.set_placeholder_text("--some-flag value")
 
-        # Right: options
-        right = Adw.PreferencesPage()
+        # simple file chooser button to pick an exe
+        self.btn_browse = Gtk.Button(label="Browse…")
+        self.btn_browse.set_tooltip_text("Pick an executable from host")
+        self.btn_browse.connect("clicked", self.on_browse_clicked)
+        self.host_cmd.add_suffix(self.btn_browse)
 
-        sec_target = Adw.PreferencesGroup(title="Target")
-        self.lbl_target = Gtk.Label(label="(no app selected)")
-        row_target = Adw.ActionRow(title="Selected target")
-        row_target.add_suffix(self.lbl_target)
-        row_target.set_activatable(False)
-        sec_target.add(row_target)
+        add_rows(page, "Host target (system app)", self.host_cmd, self.host_args)
+        return page
 
-        sec_mult = Adw.PreferencesGroup(title="Frame Generation")
-        self.cmb_mult = Gtk.DropDown.new_from_strings(["2", "3", "4", "6", "8"])
-        self.cmb_mult.set_selected(0)
-        row_mult = Adw.ActionRow(title="Multiplier (X)")
-        row_mult.add_suffix(self.cmb_mult)
-        sec_mult.add(row_mult)
+    def on_browse_clicked(self, *_):
+        dialog = Gtk.FileDialog(title="Choose executable")
+        # Allow picking any file; users know their system paths
+        def _on_done(_d, res, self=self):
+            try:
+                file = _d.open_finish(res)
+                if file:
+                    self.host_cmd.set_text(file.get_path() or "")
+            except Exception:
+                pass
+        dialog.open(self, None, _on_done)
 
-        self.scale_flow = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, 0.25, 1.0, 0.05)
-        self.scale_flow.set_value(1.0)
-        self.scale_flow.set_hexpand(True)
-        row_flow = Adw.ActionRow(title="Flow scale")
-        row_flow.add_suffix(self.scale_flow)
-        sec_mult.add(row_flow)
+    # ------------------- Options page -------------------
 
-        self.sw_perf = Gtk.Switch(active=False)
-        row_perf = Adw.ActionRow(title="Performance mode")
-        row_perf.add_suffix(self.sw_perf)
-        row_perf.set_activatable_widget(self.sw_perf)
-        sec_mult.add(row_perf)
+    def _build_options_page(self) -> Adw.PreferencesPage:
+        page = Adw.PreferencesPage()
 
-        self.sw_hdr = Gtk.Switch(active=False)
-        row_hdr = Adw.ActionRow(title="HDR mode")
-        row_hdr.add_suffix(self.sw_hdr)
-        row_hdr.set_activatable_widget(self.sw_hdr)
-        sec_mult.add(row_hdr)
+        # multiplier
+        mult_model = Gtk.StringList.new(["2", "3", "4", "6", "8"])
+        self.row_mult = Adw.ComboRow(title="Multiplier (X)", model=mult_model)
+        self.row_mult.set_selected(0)
 
-        self.cmb_present = Gtk.DropDown.new_from_strings(["(auto)", "fifo", "vsync", "mailbox", "immediate"])  # fifo==vsync alias
-        self.cmb_present.set_selected(0)
-        row_present = Adw.ActionRow(title="Present mode override")
-        row_present.add_suffix(self.cmb_present)
-        sec_mult.add(row_present)
+        # switches
+        self.row_flow = Adw.SwitchRow(title="Flow Scale")
+        self.row_perf = Adw.SwitchRow(title="Performance mode")
+        self.row_hdr  = Adw.SwitchRow(title="HDR")
 
-        sec_adv = Adw.PreferencesGroup(title="Advanced")
-        self.entry_proc = Gtk.Entry(placeholder_text="Optional: LSFG_PROCESS override")
-        row_proc = Adw.ActionRow(title="Process name override")
-        row_proc.add_suffix(self.entry_proc)
-        sec_adv.add(row_proc)
+        # present mode
+        pm_model = Gtk.StringList.new(["auto", "fifo", "mailbox", "immediate"])
+        self.row_present = Adw.ComboRow(title="Present mode", model=pm_model)
+        self.row_present.set_selected(0)
 
-        self.entry_args = Gtk.Entry(placeholder_text="Optional: extra args (file path, URL, etc.)")
-        row_args = Adw.ActionRow(title="Extra launch args")
-        row_args.add_suffix(self.entry_args)
-        sec_adv.add(row_args)
+        # LSFG_PROCESS + extra env/args
+        self.row_process = Adw.EntryRow(title="LSFG_PROCESS (optional)")
+        self.row_extra   = Adw.EntryRow(title="Extra args (app)", text="")
+        self.row_extra.set_placeholder_text("additional arguments for the target app")
 
-        row_help = Adw.ActionRow(title="Docs")
-        btn_help = Gtk.Button(label="Open Flatpak wiki page…")
-        btn_help.connect("clicked", self.on_help)
-        row_help.add_suffix(btn_help)
+        add_rows(page, "Scaling & Modes", self.row_mult, self.row_flow, self.row_perf, self.row_hdr, self.row_present)
+        add_rows(page, "Advanced", self.row_process, self.row_extra)
+        return page
 
-        right.add(sec_target)
-        right.add(sec_mult)
-        right.add(sec_adv)
-        right.add(row_help)
+    # ------------------- Help page -------------------
 
-        content.set_start_child(left_box)
-        content.set_end_child(right)
+    def _build_help_page(self) -> Adw.PreferencesPage:
+        page = Adw.PreferencesPage()
 
-    # ---------- Data loading ----------
-    def _load_flatpaks(self):
-        try:
-            cmd = ["flatpak-spawn", "--host", "flatpak", "list", "--app", "--columns=application,name,branch"]
-            res = subprocess.run(cmd, capture_output=True, text=True)
-            apps = []
-            for line in res.stdout.splitlines():
-                parts = [p for p in line.split('\t') if p]
-                if len(parts) >= 3:
-                    apps.append(FlatpakApp(parts[0], parts[1], parts[2]))
-            self.flatpaks = sorted(apps, key=lambda a: (a.name or a.app_id).lower())
-        except Exception as e:
-            self.flatpaks = []
-            self._toast(f"Failed to enumerate Flatpaks: {e}")
-        self._apply_filter_flatpak()
+        row_help = Adw.ActionRow(title="Notes", subtitle="lsfg-vk is a Vulkan layer. Target apps must use Vulkan (or GL→Vulkan via Zink).")
+        row_repo = Adw.ActionRow(title="Project page", subtitle="GitHub repository and documentation")
+        btn_open = Gtk.Button.new_from_icon_name("external-link-symbolic")
+        btn_open.set_tooltip_text("Open GitHub")
+        btn_open.connect("clicked", lambda *_: Gio.AppInfo.launch_default_for_uri(
+            "https://github.com/0xREAVEN/lsfgvk-launcher", None))
+        row_repo.add_suffix(btn_open)
+        row_repo.set_activatable(True)
+        row_repo.connect("activated", lambda *_: Gio.AppInfo.launch_default_for_uri(
+            "https://github.com/0xREAVEN/lsfgvk-launcher", None))
 
-    def _apply_filter_flatpak(self):
-        q = (self.search_fp.get_text() or "").lower()
-        self._filtered = [a for a in self.flatpaks if q in a.app_id.lower() or q in (a.name or "").lower()]
-        self.store_fp.splice(0, self.store_fp.get_n_items(), [])
-        for a in self._filtered:
-            self.store_fp.append(a.name or a.app_id)
+        add_rows(page, "Help", row_help, row_repo)
+        return page
 
-    def _load_host_cmds(self, force=False):
-        if self._host_candidates and not force:
-            self._apply_filter_host()
-            return
-        try:
-            cmd = ["flatpak-spawn", "--host", "bash", "-lc", "compgen -c | sort -u"]
-            res = subprocess.run(cmd, capture_output=True, text=True)
-            self._host_candidates = [l.strip() for l in res.stdout.splitlines() if l.strip()]
-        except Exception as e:
-            self._host_candidates = []
-            self._toast(f"Failed to enumerate host commands: {e}")
-        self._apply_filter_host()
+    # ------------------- command building -------------------
 
-    def _apply_filter_host(self):
-        q = (self.search_host.get_text() or "").lower()
-        if not self._host_candidates:
-            self.store_host.splice(0, self.store_host.get_n_items(), [])
-            return
-        self._filtered_host = [c for c in self._host_candidates if q in c.lower()][:500]
-        self.store_host.splice(0, self.store_host.get_n_items(), [])
-        for c in self._filtered_host:
-            self.store_host.append(c)
+    def collect_options(self) -> LSFGOptions:
+        o = LSFGOptions()
+        o.multiplier   = self._combo_value(self.row_mult)
+        o.flow_scale   = self.row_flow.get_active()
+        o.performance  = self.row_perf.get_active()
+        o.hdr          = self.row_hdr.get_active()
+        o.present_mode = self._combo_value(self.row_present)
+        o.lsfg_process = self.row_process.get_text().strip()
+        o.extra_args   = self.row_extra.get_text().strip()
+        return o
 
-    # ---------- Actions ----------
-    def on_host_search(self, *_):
-        if not self._host_candidates:
-            self._load_host_cmds()
-        else:
-            self._apply_filter_host()
+    def _combo_value(self, comborow: Adw.ComboRow) -> str:
+        model = comborow.get_model()
+        idx = comborow.get_selected()
+        if idx < 0 or idx >= model.get_n_items():
+            return ""
+        return model.get_string(idx)
 
-    def on_pick_flatpak(self, _listview, pos):
-        if 0 <= pos < len(self._filtered):
-            self.selected_app = self._filtered[pos]
-            self.selected_host_cmd = None
-            self.lbl_target.set_text(f"Flatpak: {self.selected_app.name} ({self.selected_app.app_id})")
-
-    def on_pick_host(self, _listview, pos):
-        if 0 <= pos < len(self._filtered_host):
-            self.selected_host_cmd = self._filtered_host[pos]
-            self.selected_app = None
-            self.lbl_target.set_text(f"Host: {self.selected_host_cmd}")
-
-    def _build_env(self):
-        env = {"LSFG_LEGACY": "1", "LSFG_MULTIPLIER": self.cmb_mult.get_selected_item().get_string()}
-        flow = round(self.scale_flow.get_value(), 2)
-        if flow != 1.0:
-            env["LSFG_FLOW_SCALE"] = str(flow)
-        if self.sw_perf.get_active():
-            env["LSFG_PERFORMANCE_MODE"] = "1"
-        if self.sw_hdr.get_active():
-            env["LSFG_HDR_MODE"] = "1"
-        present = self.cmb_present.get_selected_item().get_string()
-        if present and present != "(auto)":
-            env["LSFG_EXPERIMENTAL_PRESENT_MODE"] = "fifo" if present == "vsync" else present
-        proc = self.entry_proc.get_text().strip()
-        if proc:
-            env["LSFG_PROCESS"] = proc
+    def build_env_pairs(self, opts: LSFGOptions) -> List[str]:
+        env = []
+        # Minimal set commonly used by lsfg-vk
+        env.append(f"LSFG_MULTIPLIER={opts.multiplier}")
+        env.append(f"LSFG_FLOW_SCALE={'1' if opts.flow_scale else '0'}")
+        env.append(f"LSFG_PERFORMANCE={'1' if opts.performance else '0'}")
+        env.append(f"LSFG_HDR={'1' if opts.hdr else '0'}")
+        if opts.present_mode and opts.present_mode != "auto":
+            env.append(f"LSFG_PRESENT_MODE={opts.present_mode}")
+        if opts.lsfg_process:
+            env.append(f"LSFG_PROCESS={opts.lsfg_process}")
+        # enable layer (many setups auto-enable, but we help a bit)
+        env.append("VK_INSTANCE_LAYERS=lsfg_vk")
+        env.append("VK_LAYER_PATH=/usr/share/vulkan/explicit_layer.d:/etc/vulkan/explicit_layer.d")
         return env
 
-    def _build_command(self):
-        env = self._build_env()
-        extra = shlex.split(self.entry_args.get_text() or "")
+    def build_command(self) -> List[str]:
+        """
+        Build the host command according to the currently selected page.
+        Always starts with: flatpak-spawn --host env VAR=... ... <cmd> [args...]
+        """
+        opts = self.collect_options()
+        env_pairs = self.build_env_pairs(opts)
 
-        if self.selected_app is not None:
-            # Flatpak app
-            cmd = ["flatpak-spawn", "--host", "flatpak", "run"]
-            cmd += [f"--env={k}={v}" for k, v in env.items()]
-            cmd += [self.selected_app.app_id]
-            cmd += extra
-            return cmd
-        elif self.selected_host_cmd is not None:
-            # Host app via shell for PATH/aliases
-            env_assign = " ".join(f"{k}={shlex.quote(v)}" for k, v in env.items())
-            tail = " ".join([shlex.quote(self.selected_host_cmd)] + [shlex.quote(x) for x in extra])
-            shell_line = f"{env_assign} {tail}" if env_assign else tail
-            return ["flatpak-spawn", "--host", "bash", "-lc", shell_line]
+        # base prefix: run on host with env injected
+        cmd: List[str] = ["flatpak-spawn", "--host", "env"] + env_pairs
+
+        if self.stack.get_visible_child_name() == "flatpak":
+            idx = self.flatpak_combo.get_selected()
+            if idx < 0 or idx >= self.flatpak_model.get_n_items():
+                raise RuntimeError("No Flatpak application selected")
+            appid = self.flatpak_model.get_string(idx)
+            args = shlex.split(self.flatpak_args.get_text().strip() or "")
+            # run host-side flatpak
+            cmd += ["flatpak", "run", appid] + args
+
+        elif self.stack.get_visible_child_name() == "host":
+            target = self.host_cmd.get_text().strip()
+            if not target:
+                raise RuntimeError("No host command provided")
+            args = shlex.split(self.host_args.get_text().strip() or "")
+            cmd += [target] + args
+
         else:
-            raise RuntimeError("Pick a target app (Flatpak or Host)")
+            # default: options page should not launch anything itself
+            raise RuntimeError("Select Flatpak or Host tab")
 
-    def on_preview(self, *_):
+        # Append extra args (options page) at the end
+        extra = shlex.split(self.options.extra_args) if (self.options.extra_args := self.row_extra.get_text().strip()) else []
+        cmd += extra
+        return cmd
+
+    # ------------------- actions -------------------
+
+    def on_preview_clicked(self, *_):
         try:
-            cmd = self._build_command()
-            text = " ".join(shlex.quote(c) for c in cmd)
-            self._toast(text, 6000)
+            cmd = self.build_command()
+            text = join_shell_cmd(cmd)
         except Exception as e:
-            self._toast(str(e))
+            text = f"# ERROR: {e}"
+        self.preview_buf.set_text(text)
 
-    def on_launch(self, *_):
+    def on_launch_clicked(self, *_):
         try:
-            subprocess.Popen(self._build_command())
-            self._toast("Launching…")
+            cmd = self.build_command()
+        except Exception as e:
+            self._toast(f"Build error: {e}")
+            self.on_preview_clicked()
+            return
+
+        # Spawn asynchronously; do not block UI
+        try:
+            proc = GLib.Subprocess.new(cmd, GLib.SubprocessFlags.NONE)
+            # Optional: disconnect from child (let it run)
+            self._toast("Launched ✅")
+            self.on_preview_clicked()
         except Exception as e:
             self._toast(f"Launch failed: {e}")
+            self.on_preview_clicked()
 
-    def on_help(self, *_):
-        url = "https://github.com/PancakeTAS/lsfg-vk/wiki/Using-lsfg%E2%80%90vk-in-Flatpak"
-        Gio.AppInfo.launch_default_for_uri(url, None)
+    def _toast(self, msg: str):
+        # Simple fallback toast using a transient dialog-less notification
+        # (Adw.ToastOverlay is nice, but we keep deps minimal)
+        print(msg)
 
-    def _toast(self, text: str, timeout=3000):
-        t = Adw.Toast.new(text)
-        t.set_timeout(timeout)
-        self.toast_overlay.add_toast(t)
 
-class App(Adw.Application):
+# ----------------------------- Application -----------------------------
+
+class LSFGVKApp(Adw.Application):
     def __init__(self):
         super().__init__(application_id=APP_ID, flags=Gio.ApplicationFlags.FLAGS_NONE)
-    def do_activate(self):
-        MainWindow(self).present()
+        self.connect("activate", self.do_activate)
+
+    def do_activate(self, *_):
+        if self.props.active_window:
+            self.props.active_window.present()
+            return
+        win = MainWindow(self)
+        win.present()
+
+
+def main(argv: List[str]) -> int:
+    Adw.init()
+    app = LSFGVKApp()
+    return app.run(argv)
+
 
 if __name__ == "__main__":
-    App().run()
+    raise SystemExit(main(sys.argv))
