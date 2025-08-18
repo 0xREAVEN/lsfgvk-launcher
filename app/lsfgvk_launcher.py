@@ -3,7 +3,7 @@
 
 import sys, os, json, shlex, subprocess
 from dataclasses import dataclass, asdict
-from typing import List, Tuple, Optional
+from typing import List, Tuple
 
 import gi
 gi.require_version("Gtk", "4.0")
@@ -12,10 +12,9 @@ from gi.repository import Gtk, Adw, Gio, GLib
 
 APP_ID = "io.reaven.LSFGVKLauncher"
 
-# -------------------- helpers --------------------
+# ---------- helpers ----------
 
 def run_host(args: List[str]) -> Tuple[int, str, str]:
-    """Run a command on the host via flatpak-spawn --host."""
     cmd = ["flatpak-spawn", "--host"] + args
     try:
         p = subprocess.run(cmd, text=True, capture_output=True, check=False)
@@ -50,7 +49,7 @@ def show_dialog(parent: Gtk.Widget, title: str, body: str):
     dlg.set_close_response("ok")
     dlg.present()
 
-# -------------------- persistence --------------------
+# ---------- persistence ----------
 
 def cfg_path() -> str:
     base = os.path.join(GLib.get_user_config_dir(), APP_ID)
@@ -76,7 +75,9 @@ def save_json(data: dict) -> None:
     except Exception:
         pass
 
-# -------------------- model --------------------
+# ---------- model ----------
+
+from dataclasses import dataclass
 
 @dataclass
 class LSFGShared:
@@ -103,7 +104,6 @@ class SessionState:
     def from_store() -> "SessionState":
         d = asdict(SessionState.defaults())
         stored = load_json(d)
-        # rebuild objects
         shared = LSFGShared(**stored.get("shared", {}))
         return SessionState(shared=shared,
                             flatpak_app=stored.get("flatpak_app", ""),
@@ -114,12 +114,12 @@ class SessionState:
     def save(self):
         save_json(asdict(self))
 
-# -------------------- option controls (duplicated & synced) --------------------
+# ---------- option controls block (réutilisé) ----------
 
 class OptionControls:
-    """A block of controls (multiplier+switches+present+process)."""
     def __init__(self):
         self.box = Adw.PreferencesGroup(title="LSFG-vk options")
+
         # Multiplier
         self._mult = "2"
         row_mult = Adw.ActionRow(title="Multiplier (X)")
@@ -133,21 +133,21 @@ class OptionControls:
         self._mult_buttons[0].set_active(True)
         row_mult.add_suffix(mult_box)
         row_mult.add_suffix(info_button(
-            "LSFG_MULTIPLIER — facteur d’interpolation (X2, X3, X4, X6, X8).",
+            "LSFG_MULTIPLIER — facteur d’interpolation (X2/X3/X4/X6/X8).",
             self._on_info))
 
         # Switches
         self.row_flow = Adw.SwitchRow(title="Flow Scale")
         self.row_flow.add_suffix(info_button(
-            "LSFG_FLOW_SCALE — active la variation adaptative du flux.",
+            "LSFG_FLOW_SCALE — variation adaptative du flux.",
             self._on_info))
         self.row_perf = Adw.SwitchRow(title="Performance mode")
         self.row_perf.add_suffix(info_button(
-            "LSFG_PERFORMANCE — privilégie la performance au détriment de la qualité.",
+            "LSFG_PERFORMANCE — favorise la performance.",
             self._on_info))
         self.row_hdr = Adw.SwitchRow(title="HDR")
         self.row_hdr.add_suffix(info_button(
-            "LSFG_HDR — signale un rendu HDR au backend Vulkan.",
+            "LSFG_HDR — signale un rendu HDR au backend.",
             self._on_info))
 
         # Present mode
@@ -155,16 +155,15 @@ class OptionControls:
         self.row_present = Adw.ComboRow(title="Present mode", model=pm_model)
         self.row_present.set_selected(0)
         self.row_present.add_suffix(info_button(
-            "LSFG_PRESENT_MODE — mode de présentation Vulkan (auto/fifo/mailbox/immediate).",
+            "LSFG_PRESENT_MODE — mode de présentation Vulkan.",
             self._on_info))
 
-        # Process
+        # LSFG_PROCESS
         self.row_process = Adw.EntryRow(title="LSFG_PROCESS (optional)")
         self.row_process.add_suffix(info_button(
-            "LSFG_PROCESS — filtre sur le nom du processus cible (laisser vide pour tous).",
+            "Filtrer sur le nom du processus cible (laisser vide = tous).",
             self._on_info))
 
-        # Extra row (added by caller if besoin)
         self.box.add(row_mult)
         self.box.add(self.row_flow)
         self.box.add(self.row_perf)
@@ -172,7 +171,6 @@ class OptionControls:
         self.box.add(self.row_present)
         self.box.add(self.row_process)
 
-    # internal
     def _on_mult_toggled(self, btn: Gtk.ToggleButton, label: str):
         if not btn.get_active():
             return
@@ -182,11 +180,9 @@ class OptionControls:
                 b.set_active(False)
 
     def _on_info(self, _btn, text: str):
-        # parent window
         root = self.box.get_root()
         show_dialog(root, "Information", text)
 
-    # external API
     def to_shared(self) -> LSFGShared:
         model = self.row_present.get_model()
         idx = self.row_present.get_selected()
@@ -201,23 +197,21 @@ class OptionControls:
         )
 
     def set_from_shared(self, s: LSFGShared):
-        # avoid signals loops by blocking notify where applicable
         for b in self._mult_buttons:
             b.set_active(b.get_label() == s.multiplier)
         self._mult = s.multiplier
         self.row_flow.set_active(bool(s.flow_scale))
         self.row_perf.set_active(bool(s.performance))
         self.row_hdr.set_active(bool(s.hdr))
-        # select present
         model = self.row_present.get_model()
-        found = 0
+        sel = 0
         for i in range(model.get_n_items()):
             if model.get_string(i) == (s.present_mode or "auto"):
-                found = i; break
-        self.row_present.set_selected(found)
+                sel = i; break
+        self.row_present.set_selected(sel)
         self.row_process.set_text(s.lsfg_process or "")
 
-# -------------------- main window --------------------
+# ---------- main window ----------
 
 class MainWindow(Adw.ApplicationWindow):
     def __init__(self, app: Adw.Application):
@@ -226,11 +220,11 @@ class MainWindow(Adw.ApplicationWindow):
         self.set_title("LSFG-VK Launcher")
 
         self.state = SessionState.from_store()
-        self._sync_guard = False  # prevent recursive sync
+        self._sync_guard = False
 
         self.stack = Adw.ViewStack()
 
-        # build pages
+        # pages
         self.page_flatpak = self._build_flatpak_page()
         self.page_host    = self._build_host_page()
         self.page_help    = self._build_help_page()
@@ -239,20 +233,20 @@ class MainWindow(Adw.ApplicationWindow):
         self.stack.add_titled(self.page_host,    "host",    "Host")
         self.stack.add_titled(self.page_help,    "help",    "Help")
 
-        # Toolbar + view switchers (haut & bas)
+        # chrome
         toolbar = Adw.ToolbarView()
         header = Adw.HeaderBar()
         switch_title = Adw.ViewSwitcherTitle()
-        switch_title.set_stack(self.stack)
+        switch_title.props.stack = self.stack   # évite le warning deprecation
         switch_title.set_title("LSFG-VK Launcher")
         header.set_title_widget(switch_title)
         toolbar.add_top_bar(header)
 
         switch_bar = Adw.ViewSwitcherBar()
-        switch_bar.set_stack(self.stack)
+        switch_bar.props.stack = self.stack     # idem
         toolbar.add_bottom_bar(switch_bar)
 
-        # zone Preview/Launch
+        # bottom preview/launch
         bottom_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8,
                              margin_top=8, margin_bottom=8, margin_start=12, margin_end=12)
         btn_box = Gtk.Box(spacing=8)
@@ -280,12 +274,11 @@ class MainWindow(Adw.ApplicationWindow):
 
         GLib.idle_add(self._reload_flatpak_list)
 
-    # -------------- Flatpak page --------------
+    # ----- Flatpak page -----
 
     def _build_flatpak_page(self) -> Adw.PreferencesPage:
         page = Adw.PreferencesPage()
 
-        # selector with icon preview
         self.flatpak_model = Gtk.StringList.new([])
         self.flatpak_combo = Adw.ComboRow(title="Application", subtitle="Choose an installed Flatpak",
                                           model=self.flatpak_model)
@@ -300,43 +293,35 @@ class MainWindow(Adw.ApplicationWindow):
         btn_refresh.set_tooltip_text("Refresh list")
         btn_refresh.connect("clicked", lambda *_: self._reload_flatpak_list())
         self.flatpak_combo.add_suffix(btn_refresh)
-
         self.flatpak_combo.connect("notify::selected", self._on_flatpak_selected)
 
-        # per-target args
         self.flatpak_args = Adw.EntryRow(title="Extra arguments", text=self.state.flatpak_args or "")
         self.flatpak_args.add_suffix(info_button(
-            "Arguments passés à l’application Flatpak (ex: --fullscreen).",
+            "Arguments passés à l’app (ex: --fullscreen).",
             lambda b, t: show_dialog(self, "Information", t)
         ))
 
-        # options block (duplicated but synced)
         self.ctrl_flatpak = OptionControls()
         self.ctrl_flatpak.set_from_shared(self.state.shared)
 
-        opt_hint = Adw.ActionRow(title="Hint", subtitle="Ensure the target uses Vulkan (or GL via Zink).")
+        hint = Adw.ActionRow(title="Hint", subtitle="Target must use Vulkan (or GL via Zink).")
 
-        # assemble
-        group_target = Adw.PreferencesGroup(title="Flatpak target")
-        group_target.add(self.flatpak_combo)
-        group_target.add(self.flatpak_args)
-        group_target.add(opt_hint)
+        grp = Adw.PreferencesGroup(title="Flatpak target")
+        grp.add(self.flatpak_combo)
+        grp.add(self.flatpak_args)
+        grp.add(hint)
 
-        page.add(group_target)
+        page.add(grp)
         page.add(self.ctrl_flatpak.box)
-
         return page
 
     def _reload_flatpak_list(self):
         apps = list_flatpaks()
         self.flatpak_model.splice(0, self.flatpak_model.get_n_items(), apps)
-        # reselect last used if present
         if self.state.flatpak_app and self.state.flatpak_app in apps:
-            idx = apps.index(self.state.flatpak_app)
-            self.flatpak_combo.set_selected(idx)
+            self.flatpak_combo.set_selected(apps.index(self.state.flatpak_app))
         elif apps:
             self.flatpak_combo.set_selected(0)
-        # update icon
         self._update_flatpak_icon()
 
     def _on_flatpak_selected(self, *_):
@@ -351,22 +336,19 @@ class MainWindow(Adw.ApplicationWindow):
         name = ""
         if 0 <= idx < self.flatpak_model.get_n_items():
             name = self.flatpak_model.get_string(idx)
-        # best-effort: try themed icon = app-id, else generic
-        if name:
-            self.flatpak_icon.set_from_icon_name(name)
-        else:
-            self.flatpak_icon.set_from_icon_name("application-x-executable-symbolic")
+        self.flatpak_icon.set_from_icon_name(name or "application-x-executable-symbolic")
 
-    # -------------- Host page --------------
+    # ----- Host page -----
 
     def _build_host_page(self) -> Adw.PreferencesPage:
         page = Adw.PreferencesPage()
 
         self.host_cmd = Adw.EntryRow(title="Command", text=self.state.host_cmd or "")
         self.host_cmd.add_suffix(info_button(
-            "Chemin ou nom d’exécutable (ex: vlc, retroarch, /usr/bin/mpv).",
+            "Chemin/nom d’exécutable (vlc, retroarch, /usr/bin/mpv…).",
             lambda b, t: show_dialog(self, "Information", t)
         ))
+
         self.host_args = Adw.EntryRow(title="Extra arguments", text=self.state.host_args or "")
         self.host_args.add_suffix(info_button(
             "Arguments passés au binaire système.",
@@ -381,11 +363,11 @@ class MainWindow(Adw.ApplicationWindow):
         self.ctrl_host = OptionControls()
         self.ctrl_host.set_from_shared(self.state.shared)
 
-        group_target = Adw.PreferencesGroup(title="Host target (system app)")
-        group_target.add(self.host_cmd)
-        group_target.add(self.host_args)
+        grp = Adw.PreferencesGroup(title="Host target (system app)")
+        grp.add(self.host_cmd)
+        grp.add(self.host_args)
 
-        page.add(group_target)
+        page.add(grp)
         page.add(self.ctrl_host.box)
         return page
 
@@ -402,12 +384,12 @@ class MainWindow(Adw.ApplicationWindow):
                 pass
         dlg.open(self, None, done)
 
-    # -------------- Help page --------------
+    # ----- Help page -----
 
     def _build_help_page(self) -> Adw.PreferencesPage:
         page = Adw.PreferencesPage()
         row1 = Adw.ActionRow(title="Notes",
-                             subtitle="lsfg-vk est une couche Vulkan. La cible doit utiliser Vulkan (ou GL→Zink).")
+                             subtitle="lsfg-vk est une couche Vulkan. Cible : Vulkan (ou GL→Zink).")
         row2 = Adw.ActionRow(title="Project", subtitle="Open repository on GitHub")
         btn = Gtk.Button.new_from_icon_name("external-link-symbolic")
         btn.set_tooltip_text("Open GitHub")
@@ -422,14 +404,13 @@ class MainWindow(Adw.ApplicationWindow):
         page.add(grp)
         return page
 
-    # -------------- build + run --------------
+    # ----- command build & run -----
 
     def _collect_shared(self) -> LSFGShared:
-        # merge/sync from one control (they should be identical after sync)
         return self.ctrl_flatpak.to_shared()
 
     def _sync_controls(self, shared: LSFGShared):
-        if self._sync_guard:
+        if getattr(self, "_sync_guard", False):
             return
         self._sync_guard = True
         self.ctrl_flatpak.set_from_shared(shared)
@@ -447,17 +428,14 @@ class MainWindow(Adw.ApplicationWindow):
             env.append(f"LSFG_PRESENT_MODE={s.present_mode}")
         if s.lsfg_process:
             env.append(f"LSFG_PROCESS={s.lsfg_process}")
-
         env.append("VK_INSTANCE_LAYERS=lsfg_vk")
         env.append("VK_LAYER_PATH=/usr/share/vulkan/explicit_layer.d:/etc/vulkan/explicit_layer.d")
         return env
 
     def _build_command(self) -> List[str]:
-        # collect shared from whichever block, then sync both
         shared = self._collect_shared()
         self._sync_controls(shared)
 
-        # keep last-used in store too
         self.state.shared = shared
         self.state.flatpak_args = self.flatpak_args.get_text().strip()
         self.state.host_cmd    = self.host_cmd.get_text().strip()
@@ -475,20 +453,17 @@ class MainWindow(Adw.ApplicationWindow):
             self.state.flatpak_app = appid
             args = shlex.split(self.flatpak_args.get_text().strip() or "")
             cmd += ["flatpak", "run", appid] + args
-
         elif visible == "host":
             cmdline = self.host_cmd.get_text().strip()
             if not cmdline:
                 raise RuntimeError("Enter a host command")
             args = shlex.split(self.host_args.get_text().strip() or "")
             cmd += [cmdline] + args
-
         else:
             raise RuntimeError("Select Flatpak or Host")
 
         return cmd
 
-    # actions
     def on_preview(self, *_):
         try:
             cmd = self._build_command()
@@ -507,14 +482,13 @@ class MainWindow(Adw.ApplicationWindow):
             self.on_preview()
             return
         try:
-            # Prefer Gio.Subprocess for GLib <-> introspection stability
             Gio.Subprocess.new(cmd, Gio.SubprocessFlags.NONE)
             self.on_preview()
         except Exception as e:
             show_dialog(self, "Launch failed", str(e))
             self.on_preview()
 
-# -------------------- app --------------------
+# ---------- app ----------
 
 class App(Adw.Application):
     def __init__(self):
@@ -523,10 +497,8 @@ class App(Adw.Application):
 
     def _on_activate(self, *_):
         if self.props.active_window:
-            self.props.active_window.present()
-            return
-        w = MainWindow(self)
-        w.present()
+            self.props.active_window.present(); return
+        w = MainWindow(self); w.present()
 
 def main(argv):
     Adw.init()
