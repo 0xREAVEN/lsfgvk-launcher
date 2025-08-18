@@ -1,6 +1,12 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 # SPDX-License-Identifier: MIT
+#
+# LSFG-VK Launcher — Flatpak/Host launcher with lsfg-vk envs
+# - Ne JAMAIS appeler 'flatpak' dans le sandbox : toujours via 'flatpak-spawn --host'
+# - Flatpak: on utilise 'flatpak run --env=…' pour que les variables entrent dans le bac à sable
+# - Host: on lance via 'flatpak-spawn --host env … <cmd>'
+# - Options intégrées et persistées (~/.var/app/io.reaven.LSFGVKLauncher/config/.../settings.json)
 
 import os, sys, json, shlex, subprocess
 from dataclasses import dataclass, asdict, field
@@ -13,10 +19,10 @@ from gi.repository import Gtk, Adw, Gio, GLib
 
 APP_ID = "io.reaven.LSFGVKLauncher"
 
-# -------------------- util --------------------
+# -------------------- utils --------------------
 
 def run_host(args: List[str]) -> Tuple[int, str, str]:
-    """Exécute une commande sur l’hôte via flatpak-spawn --host."""
+    """Exécuter une commande sur l’hôte via flatpak-spawn --host."""
     cmd = ["flatpak-spawn", "--host"] + args
     try:
         p = subprocess.run(cmd, text=True, capture_output=True, check=False)
@@ -28,7 +34,7 @@ def join_shell(parts: List[str]) -> str:
     return " ".join(shlex.quote(p) for p in parts)
 
 def list_flatpaks() -> List[str]:
-    code, out, _ = run_host(["flatpak", "list", "--app", "--columns=application"])
+    code, out, err = run_host(["flatpak", "list", "--app", "--columns=application"])
     if code != 0:
         return []
     apps, seen = [], set()
@@ -38,11 +44,11 @@ def list_flatpaks() -> List[str]:
             apps.append(s); seen.add(s)
     return apps
 
-def info_button(text: str, on_click):
+def info_button(tooltip: str, on_click):
     btn = Gtk.Button.new_from_icon_name("dialog-information-symbolic")
     btn.set_valign(Gtk.Align.CENTER)
-    btn.set_tooltip_text(text)
-    btn.connect("clicked", on_click, text)
+    btn.set_tooltip_text(tooltip)
+    btn.connect("clicked", on_click, tooltip)
     return btn
 
 def show_dialog(parent: Gtk.Widget, title: str, body: str):
@@ -64,9 +70,9 @@ def load_json(default: dict) -> dict:
             data = json.load(f)
             if isinstance(data, dict):
                 d = default.copy()
-                # merge shallow seulement sur les clés connues
                 for k in d:
-                    if k in data: d[k] = data[k]
+                    if k in data:
+                        d[k] = data[k]
                 return d
     except Exception:
         pass
@@ -79,12 +85,12 @@ def save_json(data: dict) -> None:
     except Exception:
         pass
 
-# -------------------- modèle --------------------
+# -------------------- model --------------------
 
 @dataclass
 class LSFGShared:
     multiplier: str = "2"            # 2/3/4/6/8
-    flow_scale: bool = False
+    flow_scale: bool = False         # LSFG_FLOW_SCALE
     performance: bool = False        # LSFG_PERFORMANCE_MODE
     hdr: bool = False                # LSFG_HDR_MODE
     present_mode: str = "auto"       # auto/fifo/mailbox/immediate
@@ -100,7 +106,7 @@ class SessionState:
 
     @staticmethod
     def load() -> "SessionState":
-        d = asdict(SessionState())       # default
+        d = asdict(SessionState())
         stored = load_json(d)
         shared = LSFGShared(**stored.get("shared", {}))
         return SessionState(shared=shared,
@@ -112,7 +118,7 @@ class SessionState:
     def save(self):
         save_json(asdict(self))
 
-# -------------------- bloc d’options réutilisable --------------------
+# -------------------- options block --------------------
 
 class OptionControls:
     def __init__(self):
@@ -177,6 +183,7 @@ class OptionControls:
         if not btn.get_active():
             return
         self._mult = label
+        # un seul actif
         for b in self._mult_buttons:
             if b is not btn and b.get_active():
                 b.set_active(False)
@@ -213,7 +220,7 @@ class OptionControls:
         self.row_present.set_selected(sel)
         self.row_process.set_text(s.lsfg_process or "")
 
-# -------------------- fenêtre principale --------------------
+# -------------------- main window --------------------
 
 class MainWindow(Adw.ApplicationWindow):
     def __init__(self, app: Adw.Application):
@@ -224,21 +231,17 @@ class MainWindow(Adw.ApplicationWindow):
         self.state = SessionState.load()
 
         self.stack = Adw.ViewStack()
-
-        # pages
         self.page_flatpak = self._build_flatpak_page()
         self.page_host    = self._build_host_page()
         self.page_help    = self._build_help_page()
-
         self.stack.add_titled(self.page_flatpak, "flatpak", "Flatpak")
         self.stack.add_titled(self.page_host,    "host",    "Host")
         self.stack.add_titled(self.page_help,    "help",    "Help")
 
-        # chrome
         toolbar = Adw.ToolbarView()
         header = Adw.HeaderBar()
         switch_title = Adw.ViewSwitcherTitle()
-        # éviter les méthodes dépréciées
+        # API non-dépréciée : props.stack
         switch_title.props.stack = self.stack
         header.set_title_widget(switch_title)
         toolbar.add_top_bar(header)
@@ -247,7 +250,7 @@ class MainWindow(Adw.ApplicationWindow):
         switch_bar.props.stack = self.stack
         toolbar.add_bottom_bar(switch_bar)
 
-        # bas : preview + boutons
+        # bas de fenêtre : preview & launch
         bottom = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8,
                          margin_top=8, margin_bottom=8, margin_start=12, margin_end=12)
         btns = Gtk.Box(spacing=8)
@@ -271,6 +274,7 @@ class MainWindow(Adw.ApplicationWindow):
         root.append(self.stack)
         root.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
         root.append(bottom)
+
         toolbar.set_content(root)
         self.set_content(toolbar)
 
@@ -286,7 +290,6 @@ class MainWindow(Adw.ApplicationWindow):
         try: self.flatpak_combo.set_use_subtitle(True)
         except Exception: pass
 
-        # icône (nom d’icône = app-id si dispo)
         self.flatpak_icon = Gtk.Image.new_from_icon_name("application-x-executable-symbolic")
         self.flatpak_icon.set_pixel_size(24)
         self.flatpak_combo.add_suffix(self.flatpak_icon)
@@ -322,6 +325,7 @@ class MainWindow(Adw.ApplicationWindow):
     def _reload_flatpak_list(self):
         apps = list_flatpaks()
         self.flatpak_model.splice(0, self.flatpak_model.get_n_items(), apps)
+        # réappliquer la sélection précédente si possible
         if self.state.flatpak_app and self.state.flatpak_app in apps:
             self.flatpak_combo.set_selected(apps.index(self.state.flatpak_app))
         elif apps:
@@ -372,7 +376,7 @@ class MainWindow(Adw.ApplicationWindow):
 
     # ---------- build & run ----------
     def _collect_shared(self) -> LSFGShared:
-        # On lit depuis le bloc Flatpak (Host est synchronisé après Preview/Launch)
+        # Source de vérité = bloc Flatpak ; on synchronise ensuite Host
         return self.ctrl_flatpak.to_shared()
 
     def _sync_controls(self, s: LSFGShared):
@@ -380,7 +384,6 @@ class MainWindow(Adw.ApplicationWindow):
         self.ctrl_host.set_from_shared(s)
 
     def _env_kv(self, s: LSFGShared) -> List[str]:
-        """Retourne une liste de 'KEY=VAL' pour env."""
         env = [
             f"LSFG_MULTIPLIER={s.multiplier}",
             f"LSFG_FLOW_SCALE={'1' if s.flow_scale else '0'}",
@@ -399,8 +402,7 @@ class MainWindow(Adw.ApplicationWindow):
         self._sync_controls(s)
         self.state.shared = s
 
-        # args utilisateur
-        self.state.flatpak_args = self.flatpak_args.get_text().strip()
+        self.state.flatpak_args = (self.flatpak_args.get_text() or "").strip()
 
         idx = self.flatpak_combo.get_selected()
         if idx < 0 or idx >= self.flatpak_model.get_n_items():
@@ -411,7 +413,7 @@ class MainWindow(Adw.ApplicationWindow):
         env = self._env_kv(s)
         args = shlex.split(self.state.flatpak_args) if self.state.flatpak_args else []
 
-        # IMPORTANT : on passe par le host pour 'flatpak run' et on utilise --env=
+        # IMPORTANT: exécuter flatpak run depuis l’hôte, avec --env=
         cmd = ["flatpak-spawn", "--host", "flatpak", "run"]
         for kv in env:
             cmd.append(f"--env={kv}")
@@ -424,14 +426,13 @@ class MainWindow(Adw.ApplicationWindow):
         self._sync_controls(s)
         self.state.shared = s
 
-        self.state.host_cmd  = self.host_cmd.get_text().strip()
-        self.state.host_args = self.host_args.get_text().strip()
+        self.state.host_cmd  = (self.host_cmd.get_text() or "").strip()
+        self.state.host_args = (self.host_args.get_text() or "").strip()
         if not self.state.host_cmd:
             raise RuntimeError("Renseigne un exécutable système (ex: vlc).")
 
         env = self._env_kv(s)
         args = shlex.split(self.state.host_args) if self.state.host_args else []
-        # On exécute le binaire côté host avec env injecté
         return ["flatpak-spawn", "--host", "env", *env, self.state.host_cmd, *args]
 
     def on_preview(self, *_):
@@ -468,9 +469,9 @@ class MainWindow(Adw.ApplicationWindow):
     def _build_help_page(self) -> Adw.PreferencesPage:
         page = Adw.PreferencesPage()
         row1 = Adw.ActionRow(title="Conseil",
-                             subtitle="Installe l’extension Flatpak lsfg-vk correspondant au runtime (23.08/24.08).")
+                             subtitle="Installe l’extension Flatpak lsfg-vk (23.08/24.08 selon le runtime).")
         row2 = Adw.ActionRow(title="Dépannage",
-                             subtitle="Utilise Preview pour copier la ligne et tester dans un terminal avec VK_LOADER_DEBUG=all.")
+                             subtitle="Utilise Preview pour copier la ligne et tester avec VK_LOADER_DEBUG=all.")
         grp = Adw.PreferencesGroup(title="Aide")
         grp.add(row1); grp.add(row2)
         page.add(grp)
