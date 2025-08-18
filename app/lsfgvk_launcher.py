@@ -2,13 +2,14 @@
 # -*- coding: utf-8 -*-
 
 import sys, os, json, shlex, subprocess
-from dataclasses import dataclass, asdict
 from typing import List, Tuple
 
 import gi
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 from gi.repository import Gtk, Adw, Gio, GLib
+
+from dataclasses import dataclass, asdict, field
 
 APP_ID = "io.reaven.LSFGVKLauncher"
 
@@ -52,6 +53,7 @@ def show_dialog(parent: Gtk.Widget, title: str, body: str):
 # ---------- persistence ----------
 
 def cfg_path() -> str:
+    # Dans un Flatpak : ~/.var/app/io.reaven.LSFGVKLauncher/config/io.reaven.LSFGVKLauncher/settings.json
     base = os.path.join(GLib.get_user_config_dir(), APP_ID)
     os.makedirs(base, exist_ok=True)
     return os.path.join(base, "settings.json")
@@ -77,8 +79,6 @@ def save_json(data: dict) -> None:
 
 # ---------- model ----------
 
-from dataclasses import dataclass
-
 @dataclass
 class LSFGShared:
     multiplier: str = "2"        # 2/3/4/6/8
@@ -90,7 +90,8 @@ class LSFGShared:
 
 @dataclass
 class SessionState:
-    shared: LSFGShared = LSFGShared()
+    # IMPORTANT: default_factory pour éviter l’erreur dataclass (mutable default)
+    shared: LSFGShared = field(default_factory=LSFGShared)
     flatpak_app: str = ""
     flatpak_args: str = ""
     host_cmd: str = ""
@@ -237,13 +238,14 @@ class MainWindow(Adw.ApplicationWindow):
         toolbar = Adw.ToolbarView()
         header = Adw.HeaderBar()
         switch_title = Adw.ViewSwitcherTitle()
-        switch_title.props.stack = self.stack   # évite le warning deprecation
+        # API non-dépréciée
+        switch_title.props.stack = self.stack
         switch_title.set_title("LSFG-VK Launcher")
         header.set_title_widget(switch_title)
         toolbar.add_top_bar(header)
 
         switch_bar = Adw.ViewSwitcherBar()
-        switch_bar.props.stack = self.stack     # idem
+        switch_bar.props.stack = self.stack
         toolbar.add_bottom_bar(switch_bar)
 
         # bottom preview/launch
@@ -407,6 +409,7 @@ class MainWindow(Adw.ApplicationWindow):
     # ----- command build & run -----
 
     def _collect_shared(self) -> LSFGShared:
+        # On prend les options de la page active (les deux blocs sont synchronisés)
         return self.ctrl_flatpak.to_shared()
 
     def _sync_controls(self, shared: LSFGShared):
@@ -436,10 +439,11 @@ class MainWindow(Adw.ApplicationWindow):
         shared = self._collect_shared()
         self._sync_controls(shared)
 
-        self.state.shared = shared
+        # persistance
+        self.state.shared     = shared
         self.state.flatpak_args = self.flatpak_args.get_text().strip()
-        self.state.host_cmd    = self.host_cmd.get_text().strip()
-        self.state.host_args   = self.host_args.get_text().strip()
+        self.state.host_cmd     = self.host_cmd.get_text().strip()
+        self.state.host_args    = self.host_args.get_text().strip()
 
         env = self._env_from_shared(shared)
         cmd: List[str] = ["flatpak-spawn", "--host", "env"] + env
