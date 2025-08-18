@@ -44,7 +44,9 @@ def join_shell_cmd(parts: List[str]) -> str:
 
 def add_rows(page: Adw.PreferencesPage, title: Optional[str], *rows: Adw.ActionRow) -> Adw.PreferencesGroup:
     """Create a PreferencesGroup, add rows, then attach to page."""
-    group = Adw.PreferencesGroup(title=title) if title else Adw.PreferencesGroup()
+    # IMPORTANT: avoid '&' in titles (Pango markup parsing)
+    safe_title = title.replace("&", "and") if title else None
+    group = Adw.PreferencesGroup(title=safe_title) if safe_title else Adw.PreferencesGroup()
     for r in rows:
         group.add(r)
     page.add(group)
@@ -106,11 +108,11 @@ class MainWindow(Adw.ApplicationWindow):
 
         self.preview_view = Gtk.TextView(editable=False, wrap_mode=Gtk.WrapMode.CHAR)
         try:
-            self.preview_view.set_monospace(True)  # GTK 4 l’a, au cas où
+            self.preview_view.set_monospace(True)
         except Exception:
             pass
         self.preview_buf = self.preview_view.get_buffer()
-        self.preview_view.set_size_request(-1, 100)
+        self.preview_view.set_size_request(-1, 110)
 
         bottom_box.append(btn_box)
         bottom_box.append(self.preview_view)
@@ -144,7 +146,7 @@ class MainWindow(Adw.ApplicationWindow):
         self.btn_refresh.connect("clicked", lambda *_: self._reload_flatpak_list())
         self.flatpak_combo.add_suffix(self.btn_refresh)
 
-        # extra args (hint row below, EntryRow has no placeholder/subtitle here)
+        # extra args (hint row below, EntryRow has no placeholder/subtitle on GNOME 47)
         self.flatpak_args = Adw.EntryRow(title="Extra arguments", text="")
         self.flatpak_args.set_show_apply_button(False)
         hint_flatpak = Adw.ActionRow(title="Hint", subtitle="Example: --fullscreen")
@@ -191,14 +193,26 @@ class MainWindow(Adw.ApplicationWindow):
     def _build_options_page(self) -> Adw.PreferencesPage:
         page = Adw.PreferencesPage()
 
-        mult_model = Gtk.StringList.new(["2", "3", "4", "6", "8"])
-        self.row_mult = Adw.ComboRow(title="Multiplier (X)", model=mult_model)
-        self.row_mult.set_selected(0)
+        # Quick presets: multiplier buttons
+        self.multiplier = "2"
+        mult_row = Adw.ActionRow(title="Multiplier (X)")
+        mult_box = Gtk.Box(spacing=6)
+        self._mult_buttons: List[Gtk.ToggleButton] = []
+        for label in ["2", "3", "4", "6", "8"]:
+            b = Gtk.ToggleButton(label=label)
+            b.connect("toggled", self.on_mult_toggled, label)
+            self._mult_buttons.append(b)
+            mult_box.append(b)
+        # set default
+        self._mult_buttons[0].set_active(True)
+        mult_row.add_suffix(mult_box)
 
+        # Switches
         self.row_flow = Adw.SwitchRow(title="Flow Scale")
         self.row_perf = Adw.SwitchRow(title="Performance mode")
         self.row_hdr  = Adw.SwitchRow(title="HDR")
 
+        # Present mode + advanced
         pm_model = Gtk.StringList.new(["auto", "fifo", "mailbox", "immediate"])
         self.row_present = Adw.ComboRow(title="Present mode", model=pm_model)
         self.row_present.set_selected(0)
@@ -206,9 +220,19 @@ class MainWindow(Adw.ApplicationWindow):
         self.row_process = Adw.EntryRow(title="LSFG_PROCESS (optional)")
         self.row_extra   = Adw.EntryRow(title="Extra args (app)", text="")
 
-        add_rows(page, "Scaling & Modes", self.row_mult, self.row_flow, self.row_perf, self.row_hdr, self.row_present)
-        add_rows(page, "Advanced", self.row_process, self.row_extra)
+        add_rows(page, "Quick settings", mult_row, self.row_flow, self.row_perf, self.row_hdr)
+        add_rows(page, "Present mode and advanced", self.row_present, self.row_process, self.row_extra)
         return page
+
+    def on_mult_toggled(self, button: Gtk.ToggleButton, label: str):
+        if not button.get_active():
+            # only react on activation
+            return
+        self.multiplier = label
+        # make other buttons inactive
+        for b in self._mult_buttons:
+            if b is not button and b.get_active():
+                b.set_active(False)
 
     # ------------------- Help page -------------------
 
@@ -234,21 +258,17 @@ class MainWindow(Adw.ApplicationWindow):
 
     def collect_options(self) -> LSFGOptions:
         o = LSFGOptions()
-        o.multiplier   = self._combo_value(self.row_mult)
+        o.multiplier   = self.multiplier
         o.flow_scale   = self.row_flow.get_active()
         o.performance  = self.row_perf.get_active()
         o.hdr          = self.row_hdr.get_active()
-        o.present_mode = self._combo_value(self.row_present)
+        # ComboRow value
+        model = self.row_present.get_model()
+        idx = self.row_present.get_selected()
+        o.present_mode = model.get_string(idx) if 0 <= idx < model.get_n_items() else "auto"
         o.lsfg_process = self.row_process.get_text().strip()
         o.extra_args   = self.row_extra.get_text().strip()
         return o
-
-    def _combo_value(self, comborow: Adw.ComboRow) -> str:
-        model = comborow.get_model()
-        idx = comborow.get_selected()
-        if idx < 0 or idx >= model.get_n_items():
-            return ""
-        return model.get_string(idx)
 
     def build_env_pairs(self, opts: LSFGOptions) -> List[str]:
         env = [
