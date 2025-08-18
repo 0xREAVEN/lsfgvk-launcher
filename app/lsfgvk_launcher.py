@@ -12,9 +12,7 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 from gi.repository import Gtk, Adw, Gio, GLib
 
-
 APP_ID = "io.reaven.LSFGVKLauncher"
-
 
 # ----------------------------- helpers -----------------------------
 
@@ -26,7 +24,6 @@ def run_host_command(args: List[str]) -> Tuple[int, str, str]:
         return proc.returncode, proc.stdout.strip(), proc.stderr.strip()
     except Exception as e:
         return 1, "", str(e)
-
 
 def list_installed_flatpaks() -> List[str]:
     """Returns a list of installed Flatpak app IDs from the host."""
@@ -40,10 +37,8 @@ def list_installed_flatpaks() -> List[str]:
             uniq.append(a); seen.add(a)
     return uniq
 
-
 def join_shell_cmd(parts: List[str]) -> str:
     return " ".join(shlex.quote(p) for p in parts)
-
 
 # ----------------------------- UI helpers -----------------------------
 
@@ -54,7 +49,6 @@ def add_rows(page: Adw.PreferencesPage, title: Optional[str], *rows: Adw.ActionR
         group.add(r)
     page.add(group)
     return group
-
 
 # ----------------------------- model -----------------------------
 
@@ -67,7 +61,6 @@ class LSFGOptions:
     present_mode: str = "auto"   # auto/fifo/mailbox/immediate
     lsfg_process: str = ""       # optional
     extra_args: str = ""         # appended to target command
-
 
 # ----------------------------- Main Window -----------------------------
 
@@ -112,7 +105,10 @@ class MainWindow(Adw.ApplicationWindow):
         btn_box.append(self.btn_preview); btn_box.append(self.btn_launch)
 
         self.preview_view = Gtk.TextView(editable=False, wrap_mode=Gtk.WrapMode.CHAR)
-        self.preview_view.set_monospace(True)
+        try:
+            self.preview_view.set_monospace(True)  # GTK 4 l’a, au cas où
+        except Exception:
+            pass
         self.preview_buf = self.preview_view.get_buffer()
         self.preview_view.set_size_request(-1, 100)
 
@@ -139,18 +135,21 @@ class MainWindow(Adw.ApplicationWindow):
         self.flatpak_model = Gtk.StringList.new([])
         self.flatpak_combo = Adw.ComboRow(title="Application", subtitle="Choose an installed Flatpak",
                                           model=self.flatpak_model)
-        self.flatpak_combo.set_use_subtitle(True)
+        try:
+            self.flatpak_combo.set_use_subtitle(True)
+        except Exception:
+            pass
         self.btn_refresh = Gtk.Button.new_from_icon_name("view-refresh-symbolic")
         self.btn_refresh.set_tooltip_text("Refresh list")
         self.btn_refresh.connect("clicked", lambda *_: self._reload_flatpak_list())
         self.flatpak_combo.add_suffix(self.btn_refresh)
 
-        # extra args (info via subtitle, EntryRow n’a pas placeholder sur Adw 1.5)
+        # extra args (hint row below, EntryRow has no placeholder/subtitle here)
         self.flatpak_args = Adw.EntryRow(title="Extra arguments", text="")
         self.flatpak_args.set_show_apply_button(False)
-        self.flatpak_args.set_subtitle("Example: --fullscreen")
+        hint_flatpak = Adw.ActionRow(title="Hint", subtitle="Example: --fullscreen")
 
-        add_rows(page, "Flatpak target", self.flatpak_combo, self.flatpak_args)
+        add_rows(page, "Flatpak target", self.flatpak_combo, self.flatpak_args, hint_flatpak)
         return page
 
     def _reload_flatpak_list(self):
@@ -165,17 +164,15 @@ class MainWindow(Adw.ApplicationWindow):
         page = Adw.PreferencesPage()
 
         self.host_cmd = Adw.EntryRow(title="Command", text="")
-        self.host_cmd.set_subtitle("e.g. vlc  or  /usr/bin/retroarch")
-
         self.host_args = Adw.EntryRow(title="Extra arguments", text="")
-        self.host_args.set_subtitle("Example: --some-flag value")
+        hint_host = Adw.ActionRow(title="Hint", subtitle="e.g. vlc   or   /usr/bin/retroarch")
 
         self.btn_browse = Gtk.Button(label="Browse…")
         self.btn_browse.set_tooltip_text("Pick an executable from host")
         self.btn_browse.connect("clicked", self.on_browse_clicked)
         self.host_cmd.add_suffix(self.btn_browse)
 
-        add_rows(page, "Host target (system app)", self.host_cmd, self.host_args)
+        add_rows(page, "Host target (system app)", self.host_cmd, self.host_args, hint_host)
         return page
 
     def on_browse_clicked(self, *_):
@@ -207,10 +204,7 @@ class MainWindow(Adw.ApplicationWindow):
         self.row_present.set_selected(0)
 
         self.row_process = Adw.EntryRow(title="LSFG_PROCESS (optional)")
-        self.row_process.set_subtitle("If set, layer targets this process name")
-
         self.row_extra   = Adw.EntryRow(title="Extra args (app)", text="")
-        self.row_extra.set_subtitle("Additional arguments for the target app")
 
         add_rows(page, "Scaling & Modes", self.row_mult, self.row_flow, self.row_perf, self.row_hdr, self.row_present)
         add_rows(page, "Advanced", self.row_process, self.row_extra)
@@ -331,7 +325,6 @@ class MainWindow(Adw.ApplicationWindow):
     def _toast(self, msg: str):
         print(msg)
 
-
 # ----------------------------- Application -----------------------------
 
 class LSFGVKApp(Adw.Application):
@@ -346,12 +339,10 @@ class LSFGVKApp(Adw.Application):
         win = MainWindow(self)
         win.present()
 
-
 def main(argv: List[str]) -> int:
     Adw.init()
     app = LSFGVKApp()
     return app.run(argv)
-
 
 if __name__ == "__main__":
     raise SystemExit(main(sys.argv))
