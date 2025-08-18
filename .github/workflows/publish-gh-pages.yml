@@ -12,6 +12,9 @@ permissions:
 jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
+    env:
+      APP_ID: io.reaven.LSFGVKLauncher
+      REPO_URL: https://0xreaven.github.io/lsfgvk-launcher/repo
     steps:
       - uses: actions/checkout@v4
 
@@ -30,7 +33,7 @@ jobs:
         run: |
           flatpak install -y --user --noninteractive flathub org.gnome.Sdk//47 org.gnome.Platform//47
 
-      - name: Build & export repo
+      - name: Build & export repo (default-branch=stable)
         run: bash scripts/build_and_export.sh
 
       - name: Prepare web dir (repo + icons)
@@ -38,42 +41,36 @@ jobs:
           set -e
           mkdir -p web/repo web/icons
           rsync -a repo/ web/repo/
-          if [ -f icons/hicolor/128x128/apps/io.reaven.LSFGVKLauncher.png ]; then
-            cp icons/hicolor/128x128/apps/io.reaven.LSFGVKLauncher.png web/icons/io.reaven.LSFGVKLauncher.png
+          if [ -f icons/hicolor/128x128/apps/${APP_ID}.png ]; then
+            cp icons/hicolor/128x128/apps/${APP_ID}.png web/icons/${APP_ID}.png
           else
-            inkscape icons/io.reaven.LSFGVKLauncher.svg --export-type=png \
-              --export-filename=web/icons/io.reaven.LSFGVKLauncher.png --export-width=128 --export-height=128
+            inkscape icons/${APP_ID}.svg --export-type=png \
+              --export-filename=web/icons/${APP_ID}.png --export-width=128 --export-height=128
           fi
 
-      - name: Create flatpakref files (canonical + alias)
+      - name: Create flatpakref files (unsigned repo, force NoGPGVerify)
         run: |
-          # canonical
           printf '%s\n' \
             '[Flatpak Ref]' \
             'Title=LSFG-VK Launcher' \
-            'Name=io.reaven.LSFGVKLauncher' \
+            'Name='${APP_ID} \
             'Branch=stable' \
-            'Url=https://0xreaven.github.io/lsfgvk-launcher/repo' \
+            'Url='${REPO_URL} \
             'IsRuntime=false' \
             'RuntimeRepo=https://flathub.org/repo/flathub.flatpakrepo' \
             'NoGPGVerify=true' \
-            > web/io.reaven.LSFGVKLauncher.flatpakref
-          # alias simple
-          cp web/io.reaven.LSFGVKLauncher.flatpakref web/lsfgvk-launcher.flatpakref
+            > web/${APP_ID}.flatpakref
+          cp web/${APP_ID}.flatpakref web/lsfgvk-launcher.flatpakref
 
-
-      - name: Create landing page
+      - name: Keep custom index.html (create default if missing)
         run: |
-          printf '%s\n' \
-            '<!doctype html><meta charset="utf-8">' \
-            '<title>Reaven Flatpak Repo</title>' \
-            '<style>body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,Inter,Arial,sans-serif;max-width:720px;margin:5rem auto;padding:0 1rem;line-height:1.5}a.button{display:inline-block;padding:.9rem 1.1rem;border-radius:10px;text-decoration:none;border:1px solid #ccc}h1{margin-bottom:.3rem}small{color:#666}</style>' \
-            '<h1>LSFG-VK Launcher</h1>' \
-            '<p>One-click install (Flatpak ref):</p>' \
-            '<p><a class="button" href="lsfgvk-launcher.flatpakref">Install .flatpakref</a></p>' \
-            '<p><small>Repo URL: <code>https://0xreaven.github.io/lsfgvk-launcher/repo</code></small></p>' \
-            > web/index.html
-          echo "=== WEB TREE ==="; ls -lR web
+          if [ ! -f web/index.html ]; then
+            printf '%s\n' \
+              '<!doctype html><meta charset="utf-8"><title>LSFG-VK Launcher</title>' \
+              '<p><a href="lsfgvk-launcher.flatpakref">Install .flatpakref</a></p>' \
+              > web/index.html
+          fi
+          echo "=== WEB TREE ==="; ls -l web
 
       - name: Deploy to GitHub Pages
         uses: peaceiris/actions-gh-pages@v3
