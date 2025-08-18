@@ -44,7 +44,7 @@ def join_shell_cmd(parts: List[str]) -> str:
 
 def add_rows(page: Adw.PreferencesPage, title: Optional[str], *rows: Adw.ActionRow) -> Adw.PreferencesGroup:
     """Create a PreferencesGroup, add rows, then attach to page."""
-    # IMPORTANT: avoid '&' in titles (Pango markup parsing)
+    # éviter '&' dans les titres (parsing Pango/markup)
     safe_title = title.replace("&", "and") if title else None
     group = Adw.PreferencesGroup(title=safe_title) if safe_title else Adw.PreferencesGroup()
     for r in rows:
@@ -88,15 +88,23 @@ class MainWindow(Adw.ApplicationWindow):
         self.stack.add_titled(self.page_opts,    "options", "Options")
         self.stack.add_titled(self.page_help,    "help",    "Help")
 
-        # toolbar & switcher
+        # toolbar & switchers (haut + bas)
         self.toolbar = Adw.ToolbarView()
         header = Adw.HeaderBar()
+
+        # Affichage des onglets en mode large
+        switcher_title = Adw.ViewSwitcherTitle()
+        switcher_title.set_stack(self.stack)
+        switcher_title.set_title("LSFG-VK Launcher")
+        header.set_title_widget(switcher_title)
         self.toolbar.add_top_bar(header)
+
+        # Affichage adaptatif en mode étroit
         switcher_bar = Adw.ViewSwitcherBar()
         switcher_bar.set_stack(self.stack)
         self.toolbar.add_bottom_bar(switcher_bar)
 
-        # bottom actions (Preview/Launch + preview text)
+        # zone Preview/Launch
         bottom_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8,
                              margin_top=8, margin_bottom=8, margin_start=12, margin_end=12)
         btn_box = Gtk.Box(spacing=8)
@@ -117,7 +125,7 @@ class MainWindow(Adw.ApplicationWindow):
         bottom_box.append(btn_box)
         bottom_box.append(self.preview_view)
 
-        # compose main content
+        # contenu principal
         main_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         main_box.append(self.stack)
         main_box.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
@@ -133,7 +141,6 @@ class MainWindow(Adw.ApplicationWindow):
     def _build_flatpak_page(self) -> Adw.PreferencesPage:
         page = Adw.PreferencesPage()
 
-        # app selector
         self.flatpak_model = Gtk.StringList.new([])
         self.flatpak_combo = Adw.ComboRow(title="Application", subtitle="Choose an installed Flatpak",
                                           model=self.flatpak_model)
@@ -146,7 +153,6 @@ class MainWindow(Adw.ApplicationWindow):
         self.btn_refresh.connect("clicked", lambda *_: self._reload_flatpak_list())
         self.flatpak_combo.add_suffix(self.btn_refresh)
 
-        # extra args (hint row below, EntryRow has no placeholder/subtitle on GNOME 47)
         self.flatpak_args = Adw.EntryRow(title="Extra arguments", text="")
         self.flatpak_args.set_show_apply_button(False)
         hint_flatpak = Adw.ActionRow(title="Hint", subtitle="Example: --fullscreen")
@@ -193,7 +199,7 @@ class MainWindow(Adw.ApplicationWindow):
     def _build_options_page(self) -> Adw.PreferencesPage:
         page = Adw.PreferencesPage()
 
-        # Quick presets: multiplier buttons
+        # Boutons exclusifs pour le multiplicateur
         self.multiplier = "2"
         mult_row = Adw.ActionRow(title="Multiplier (X)")
         mult_box = Gtk.Box(spacing=6)
@@ -203,16 +209,15 @@ class MainWindow(Adw.ApplicationWindow):
             b.connect("toggled", self.on_mult_toggled, label)
             self._mult_buttons.append(b)
             mult_box.append(b)
-        # set default
         self._mult_buttons[0].set_active(True)
         mult_row.add_suffix(mult_box)
 
-        # Switches
+        # Interrupteurs
         self.row_flow = Adw.SwitchRow(title="Flow Scale")
         self.row_perf = Adw.SwitchRow(title="Performance mode")
         self.row_hdr  = Adw.SwitchRow(title="HDR")
 
-        # Present mode + advanced
+        # Present mode + avancé
         pm_model = Gtk.StringList.new(["auto", "fifo", "mailbox", "immediate"])
         self.row_present = Adw.ComboRow(title="Present mode", model=pm_model)
         self.row_present.set_selected(0)
@@ -226,10 +231,8 @@ class MainWindow(Adw.ApplicationWindow):
 
     def on_mult_toggled(self, button: Gtk.ToggleButton, label: str):
         if not button.get_active():
-            # only react on activation
             return
         self.multiplier = label
-        # make other buttons inactive
         for b in self._mult_buttons:
             if b is not button and b.get_active():
                 b.set_active(False)
@@ -262,7 +265,6 @@ class MainWindow(Adw.ApplicationWindow):
         o.flow_scale   = self.row_flow.get_active()
         o.performance  = self.row_perf.get_active()
         o.hdr          = self.row_hdr.get_active()
-        # ComboRow value
         model = self.row_present.get_model()
         idx = self.row_present.get_selected()
         o.present_mode = model.get_string(idx) if 0 <= idx < model.get_n_items() else "auto"
@@ -281,13 +283,11 @@ class MainWindow(Adw.ApplicationWindow):
             env.append(f"LSFG_PRESENT_MODE={opts.present_mode}")
         if opts.lsfg_process:
             env.append(f"LSFG_PROCESS={opts.lsfg_process}")
-        # enable layer (common paths on host)
         env.append("VK_INSTANCE_LAYERS=lsfg_vk")
         env.append("VK_LAYER_PATH=/usr/share/vulkan/explicit_layer.d:/etc/vulkan/explicit_layer.d")
         return env
 
     def build_command(self) -> List[str]:
-        """Build host command according to selected page."""
         opts = self.collect_options()
         env_pairs = self.build_env_pairs(opts)
         cmd: List[str] = ["flatpak-spawn", "--host", "env"] + env_pairs
@@ -300,14 +300,12 @@ class MainWindow(Adw.ApplicationWindow):
             appid = self.flatpak_model.get_string(idx)
             args = shlex.split(self.flatpak_args.get_text().strip() or "")
             cmd += ["flatpak", "run", appid] + args
-
         elif visible == "host":
             target = self.host_cmd.get_text().strip()
             if not target:
                 raise RuntimeError("No host command provided")
             args = shlex.split(self.host_args.get_text().strip() or "")
             cmd += [target] + args
-
         else:
             raise RuntimeError("Select Flatpak or Host tab")
 
