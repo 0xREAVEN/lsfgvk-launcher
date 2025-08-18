@@ -196,7 +196,6 @@ class MainWindow(Adw.ApplicationWindow):
 
     def on_browse_clicked(self, *_):
         dialog = Gtk.FileDialog(title="Choose executable")
-        # Allow picking any file; users know their system paths
         def _on_done(_d, res, self=self):
             try:
                 file = _d.open_finish(res)
@@ -276,7 +275,6 @@ class MainWindow(Adw.ApplicationWindow):
 
     def build_env_pairs(self, opts: LSFGOptions) -> List[str]:
         env = []
-        # Minimal set commonly used by lsfg-vk
         env.append(f"LSFG_MULTIPLIER={opts.multiplier}")
         env.append(f"LSFG_FLOW_SCALE={'1' if opts.flow_scale else '0'}")
         env.append(f"LSFG_PERFORMANCE={'1' if opts.performance else '0'}")
@@ -285,7 +283,6 @@ class MainWindow(Adw.ApplicationWindow):
             env.append(f"LSFG_PRESENT_MODE={opts.present_mode}")
         if opts.lsfg_process:
             env.append(f"LSFG_PROCESS={opts.lsfg_process}")
-        # enable layer (many setups auto-enable, but we help a bit)
         env.append("VK_INSTANCE_LAYERS=lsfg_vk")
         env.append("VK_LAYER_PATH=/usr/share/vulkan/explicit_layer.d:/etc/vulkan/explicit_layer.d")
         return env
@@ -307,7 +304,6 @@ class MainWindow(Adw.ApplicationWindow):
                 raise RuntimeError("No Flatpak application selected")
             appid = self.flatpak_model.get_string(idx)
             args = shlex.split(self.flatpak_args.get_text().strip() or "")
-            # run host-side flatpak
             cmd += ["flatpak", "run", appid] + args
 
         elif self.stack.get_visible_child_name() == "host":
@@ -318,12 +314,14 @@ class MainWindow(Adw.ApplicationWindow):
             cmd += [target] + args
 
         else:
-            # default: options page should not launch anything itself
             raise RuntimeError("Select Flatpak or Host tab")
 
-        # Append extra args (options page) at the end
-        extra = shlex.split(self.options.extra_args) if (self.options.extra_args := self.row_extra.get_text().strip()) else []
-        cmd += extra
+        # Append extra args (options page)
+        self.options.extra_args = self.row_extra.get_text().strip()
+        if self.options.extra_args:
+            extra = shlex.split(self.options.extra_args)
+            cmd += extra
+
         return cmd
 
     # ------------------- actions -------------------
@@ -344,10 +342,8 @@ class MainWindow(Adw.ApplicationWindow):
             self.on_preview_clicked()
             return
 
-        # Spawn asynchronously; do not block UI
         try:
-            proc = GLib.Subprocess.new(cmd, GLib.SubprocessFlags.NONE)
-            # Optional: disconnect from child (let it run)
+            _ = GLib.Subprocess.new(cmd, GLib.SubprocessFlags.NONE)
             self._toast("Launched ✅")
             self.on_preview_clicked()
         except Exception as e:
@@ -355,8 +351,6 @@ class MainWindow(Adw.ApplicationWindow):
             self.on_preview_clicked()
 
     def _toast(self, msg: str):
-        # Simple fallback toast using a transient dialog-less notification
-        # (Adw.ToastOverlay is nice, but we keep deps minimal)
         print(msg)
 
 
