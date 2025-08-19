@@ -1,1295 +1,877 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 # SPDX-License-Identifier: MIT
+#
+# LSFG-VK Launcher — GTK4/Libadwaita
+# - Flatpak + Host launchers with lsfg-vk and optional MangoHud
+# - Uses flatpak-spawn --host for all host interactions
+# - Options inline per page, persistence in ~/.var/app/<APPID>/config/settings.json
+#
+# Note: no 'List'/'Tuple' from typing to avoid NameError: use built-in generics.
+
+import os
+import json
+import shlex
+import subprocess
+from dataclasses import dataclass, asdict, field
+from pathlib import Path
 
 import gi
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
-gi.require_version("Gdk", "4.0")
-from gi.repository import Gtk, Adw, Gio, GLib, Gdk
+from gi.repository import Gtk, Adw, Gio, GLib
 
 APP_ID = "io.reaven.LSFGVKLauncher"
 
-# --- i18n minimal -------------------------------------------------------------
+CONFIG_DIR = Path(GLib.get_user_config_dir()) / "lsfgvk-launcher"
+CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+CONFIG_FILE = CONFIG_DIR / "settings.json"
 
-LANG_FILE = None  # set during load/save
-CURRENT_LANG = "fr"
+# ---------------- i18n (very lightweight) ----------------
 
-I18N = {
-    "fr": {
-        # Basics / Titles
-        "app_title": "LSFG-VK Launcher",
-        "tab_flatpak": "Flatpak",
-        "tab_host": "Host",
-        "tab_help": "Aide",
-
-        # Flatpak page
-        "flatpak_group": "Cible Flatpak",
-        "flatpak_app": "Application",
-        "flatpak_choose": "Choisir un Flatpak installé",
-        "flatpak_args": "Arguments supplémentaires",
-        "flatpak_args_tip": "Arguments passés à l’app (ex: --fullscreen).",
-        "note": "Note",
-        "note_text": "Cible Vulkan (ou OpenGL via Zink) pour que lsfg-vk s’applique.",
-
-        # Host page
-        "host_group": "Cible système (host)",
-        "host_cmd": "Exécutable (host)",
-        "host_cmd_tip": "Nom/chemin d’un binaire système (vlc, mpv, retroarch, /usr/bin/…).",
-        "host_args": "Arguments supplémentaires",
-        "host_args_tip": "Arguments passés au binaire système.",
-
-        # Options block
-        "opt_group": "LSFG-vk & MangoHud",
-        "multiplier": "Multiplicateur (X)",
-        "flow": "Flow Scale",
-        "flow_tip": "LSFG_FLOW_SCALE — recalage/échelle des flux optiques.",
-        "perf": "Mode Performance",
-        "perf_tip": "LSFG_PERFORMANCE_MODE — favorise la performance.",
-        "hdr": "HDR",
-        "hdr_tip": "LSFG_HDR_MODE — force/annonce le HDR si supporté.",
-        "present": "Present mode",
-        "present_tip": "LSFG_PRESENT_MODE — mode de présentation Vulkan.",
-        "process": "LSFG_PROCESS (optionnel)",
-        "process_tip": "Limiter au nom du processus cible (laisser vide = global).",
-        "mangohud": "Afficher FPS (MangoHud)",
-        "mangohud_tip": "Active l’overlay MangoHud (FPS, frametime…)",
-
-        # Presets
-        "fav_group": "Favoris",
-        "fav_combo": "Favoris",
-        "fav_save": "Enregistrer",
-        "fav_load": "Charger",
-        "fav_run": "Lancer",
-        "fav_delete": "Supprimer",
-        "fav_default_name": "Preset {name} X{mult}",
-        "ask_name": "Nom du favori",
-        "ask_name_body": "Choisis un nom pour ce preset",
-        "ok": "OK",
-        "cancel": "Annuler",
-
-        # Bottom actions
-        "preview": "Preview",
-        "launch": "Lancer",
-        "check": "Check injection",
-
-        # Toasts / errors
-        "select_flatpak": "Choisis une application Flatpak.",
-        "host_need_exe": "Renseigne un exécutable système (ex: vlc).",
-        "mangohud_missing_host": "MangoHud non trouvé sur l’hôte (installe 'mangohud').",
-        "mangohud_missing_flatpak": "Extension MangoHud absente pour Flatpak (installe la version 23.08/24.08).",
-        "build_err": "Erreur de construction",
-        "launch_fail": "Échec de lancement",
-        "saved": "Enregistré",
-        "deleted": "Supprimé",
-        "import_ok": "Import réussi",
-        "export_ok": "Exporté dans {path}",
-        "reset_ok": "Réglages réinitialisés",
-
-        # Check/injection texts
-        "host_check_title": "== HOST INJECTION CHECK ==",
-        "fp_check_title": "== FLATPAK INJECTION CHECK ==",
-        "env_to_inject": "[ENV à injecter]",
-        "env_inside": "[ENV dans le sandbox]",
-        "layer_host": "[Layer JSON sur l’hôte]",
-        "layer_flatpak": "[Layer JSON dans le sandbox]",
-        "layer_missing_host": "lsfg-vk JSON introuvable sur host",
-        "layer_missing_fp": "lsfg-vk JSON introuvable dans le sandbox",
-        "mangohud_host": "[MangoHud sur l’hôte]",
-        "mangohud_ok": "OK: mangohud présent",
-        "mangohud_no": "mangohud non trouvé",
-        "mangohud_fp": "[Extension MangoHud]",
-        "mangohud_req": "MANGOHUD demandé",
-
-        # Help page
-        "help_group": "Aide",
-        "help_tip1": "Installe l’extension Flatpak lsfg-vk et MangoHud (23.08/24.08 selon le runtime).",
-        "help_tip2": "Utilise Preview/Check pour diagnostiquer et copier les lignes utiles.",
-        "integrations": "Intégrations",
-        "copy_steam": "Copier pour Steam",
-        "copy_heroic": "Copier pour Heroic",
-        "copy_lutris": "Copier pour Lutris",
-        "copied": "Copié dans le presse-papier",
-
-        # Menu (header)
-        "menu": "Options",
-        "about": "À propos",
-        "links": "Liens utiles",
-        "open_cfg": "Ouvrir dossier de config",
-        "export": "Exporter réglages",
-        "import": "Importer réglages",
-        "reset": "Réinitialiser",
-        "lang": "Langue",
-        "fr": "Français",
-        "en": "English",
-
-        # About dialog
-        "about_title": "À propos",
-        "about_desc": "Lance des applications Flatpak et système avec lsfg-vk, MangoHud et options pratiques.",
-        "devs": ["reaven"],
-        "website": "https://0xreaven.github.io/lsfgvk-launcher/",
-        "issues": "https://github.com/0xREAVEN/lsfgvk-launcher/issues",
-
-        # Links
-        "link_lsfg": "Wiki lsfg-vk (installation)",
-        "link_mh": "MangoHud (projet)",
-        "link_mh_flatpak": "MangoHud (extension Flathub)",
-        "link_goverlay": "GOverlay (UI overlays)",
-    },
+_STRINGS = {
     "en": {
         "app_title": "LSFG-VK Launcher",
         "tab_flatpak": "Flatpak",
         "tab_host": "Host",
-        "tab_help": "Help",
-
-        "flatpak_group": "Flatpak target",
-        "flatpak_app": "Application",
-        "flatpak_choose": "Choose an installed Flatpak",
-        "flatpak_args": "Extra arguments",
-        "flatpak_args_tip": "Arguments passed to the app (e.g. --fullscreen).",
-        "note": "Note",
-        "note_text": "Target must be Vulkan (or OpenGL via Zink) for lsfg-vk to apply.",
-
-        "host_group": "System target (host)",
-        "host_cmd": "Executable (host)",
-        "host_cmd_tip": "Binary name/path (vlc, mpv, retroarch, /usr/bin/…).",
-        "host_args": "Extra arguments",
-        "host_args_tip": "Arguments passed to the system binary.",
-
-        "opt_group": "LSFG-vk & MangoHud",
-        "multiplier": "Multiplier (X)",
-        "flow": "Flow Scale",
-        "flow_tip": "LSFG_FLOW_SCALE — optical flow scaling/alignment.",
-        "perf": "Performance mode",
-        "perf_tip": "LSFG_PERFORMANCE_MODE — favor performance.",
-        "hdr": "HDR",
-        "hdr_tip": "LSFG_HDR_MODE — force/advertise HDR if supported.",
-        "present": "Present mode",
-        "present_tip": "LSFG_PRESENT_MODE — Vulkan present mode.",
-        "process": "LSFG_PROCESS (optional)",
-        "process_tip": "Restrict to a given process name (leave empty = global).",
-        "mangohud": "Show FPS (MangoHud)",
-        "mangohud_tip": "Enable MangoHud overlay (FPS, frametime…)",
-
-        "fav_group": "Favorites",
-        "fav_combo": "Favorites",
-        "fav_save": "Save",
-        "fav_load": "Load",
-        "fav_run": "Run",
-        "fav_delete": "Delete",
-        "fav_default_name": "Preset {name} X{mult}",
-        "ask_name": "Preset name",
-        "ask_name_body": "Choose a name for this preset",
-        "ok": "OK",
-        "cancel": "Cancel",
-
+        "target_app": "Application",
+        "target_host_cmd": "Host command",
+        "target_extra_args": "Extra arguments",
+        "options": "Options",
+        "multiplier": "Multiplier",
+        "flow_scale": "Flow scale",
+        "performance": "Performance mode",
+        "hdr": "HDR mode",
+        "lsfg_process": "LSFG_PROCESS (optional)",
+        "mangohud": "Enable MangoHud",
+        "present_mode": "Present mode",
+        "none": "None",
         "preview": "Preview",
         "launch": "Launch",
         "check": "Check injection",
-
-        "select_flatpak": "Select a Flatpak application.",
-        "host_need_exe": "Enter a system executable (e.g. vlc).",
-        "mangohud_missing_host": "MangoHud not found on host (install 'mangohud').",
-        "mangohud_missing_flatpak": "MangoHud Flatpak extension missing (install 23.08/24.08).",
-        "build_err": "Build error",
-        "launch_fail": "Launch failed",
-        "saved": "Saved",
-        "deleted": "Deleted",
-        "import_ok": "Import OK",
-        "export_ok": "Exported to {path}",
-        "reset_ok": "Settings reset",
-
-        "host_check_title": "== HOST INJECTION CHECK ==",
-        "fp_check_title": "== FLATPAK INJECTION CHECK ==",
-        "env_to_inject": "[ENV to inject]",
-        "env_inside": "[ENV inside sandbox]",
-        "layer_host": "[Layer JSON on host]",
-        "layer_flatpak": "[Layer JSON inside sandbox]",
-        "layer_missing_host": "lsfg-vk JSON not found on host",
-        "layer_missing_fp": "lsfg-vk JSON not found inside sandbox",
-        "mangohud_host": "[MangoHud on host]",
-        "mangohud_ok": "OK: mangohud present",
-        "mangohud_no": "mangohud not found",
-        "mangohud_fp": "[MangoHud extension]",
-        "mangohud_req": "MANGOHUD requested",
-
-        "help_group": "Help",
-        "help_tip1": "Install lsfg-vk and MangoHud Flatpak extensions (23.08/24.08 as per runtime).",
-        "help_tip2": "Use Preview/Check to diagnose and copy the useful lines.",
-        "integrations": "Integrations",
-        "copy_steam": "Copy for Steam",
-        "copy_heroic": "Copy for Heroic",
-        "copy_lutris": "Copy for Lutris",
-        "copied": "Copied to clipboard",
-
-        "menu": "Options",
+        "favorites": "Favorites / Presets",
+        "fav_save": "Save current as favorite",
+        "fav_name": "Preset name",
+        "fav_load": "Load",
+        "fav_run": "Run",
+        "fav_delete": "Delete",
+        "menu": "Menu",
         "about": "About",
+        "open_config": "Open config folder",
+        "export_settings": "Export settings",
+        "import_settings": "Import settings",
+        "reset_settings": "Reset settings",
+        "language": "Language",
+        "lang_en": "English",
+        "lang_fr": "French",
         "links": "Useful links",
-        "open_cfg": "Open config folder",
-        "export": "Export settings",
-        "import": "Import settings",
-        "reset": "Reset settings",
-        "lang": "Language",
-        "fr": "French",
-        "en": "English",
-
-        "about_title": "About",
-        "about_desc": "Launch Flatpak and system apps with lsfg-vk, MangoHud and handy options.",
-        "devs": ["reaven"],
-        "website": "https://0xreaven.github.io/lsfgvk-launcher/",
-        "issues": "https://github.com/0xREAVEN/lsfgvk-launcher/issues",
-
-        "link_lsfg": "lsfg-vk Wiki (install)",
-        "link_mh": "MangoHud (project)",
-        "link_mh_flatpak": "MangoHud (Flathub extension)",
-        "link_goverlay": "GOverlay (overlay UI)",
+        "link_lsfg": "lsfg-vk wiki",
+        "link_mangohud": "MangoHud",
+        "link_goverlay": "GOverlay",
+        "pick_flatpak": "Pick a Flatpak app",
+        "host_cmd_placeholder": "e.g. vlc, mpv, retroarch…",
+        "args_placeholder": "--fullscreen (example)",
+        "injection_result": "Injection / Layer check",
+        "copied": "Copied to clipboard",
+        "error": "Error",
+        "ok": "OK",
+        "cancel": "Cancel",
+        "close": "Close",
+        "no_flatpak_cli": "flatpak CLI not available on host.",
+        "no_selection": "No Flatpak application selected.",
+        "export_done": "Settings exported.",
+        "import_done": "Settings imported.",
+        "reset_done": "Settings reset.",
+        "fav_saved": "Favorite saved.",
+        "fav_exists": "Preset already exists (overwritten).",
+    },
+    "fr": {
+        "app_title": "LSFG-VK Launcher",
+        "tab_flatpak": "Flatpak",
+        "tab_host": "Système",
+        "target_app": "Application",
+        "target_host_cmd": "Commande système",
+        "target_extra_args": "Arguments supplémentaires",
+        "options": "Options",
+        "multiplier": "Multiplicateur",
+        "flow_scale": "Flow scale",
+        "performance": "Mode performance",
+        "hdr": "Mode HDR",
+        "lsfg_process": "LSFG_PROCESS (optionnel)",
+        "mangohud": "Activer MangoHud",
+        "present_mode": "Present mode",
+        "none": "Aucun",
+        "preview": "Prévisualiser",
+        "launch": "Lancer",
+        "check": "Vérifier l’injection",
+        "favorites": "Favoris / Presets",
+        "fav_save": "Enregistrer le preset",
+        "fav_name": "Nom du preset",
+        "fav_load": "Charger",
+        "fav_run": "Lancer",
+        "fav_delete": "Supprimer",
+        "menu": "Menu",
+        "about": "À propos",
+        "open_config": "Ouvrir le dossier de config",
+        "export_settings": "Exporter les réglages",
+        "import_settings": "Importer les réglages",
+        "reset_settings": "Réinitialiser",
+        "language": "Langue",
+        "lang_en": "Anglais",
+        "lang_fr": "Français",
+        "links": "Liens utiles",
+        "link_lsfg": "Wiki lsfg-vk",
+        "link_mangohud": "MangoHud",
+        "link_goverlay": "GOverlay",
+        "pick_flatpak": "Choisir une application Flatpak",
+        "host_cmd_placeholder": "ex: vlc, mpv, retroarch…",
+        "args_placeholder": "--fullscreen (exemple)",
+        "injection_result": "Vérification injection / couche",
+        "copied": "Copié dans le presse-papiers",
+        "error": "Erreur",
+        "ok": "OK",
+        "cancel": "Annuler",
+        "close": "Fermer",
+        "no_flatpak_cli": "La commande flatpak n’est pas disponible sur l’hôte.",
+        "no_selection": "Aucune application Flatpak sélectionnée.",
+        "export_done": "Réglages exportés.",
+        "import_done": "Réglages importés.",
+        "reset_done": "Réglages réinitialisés.",
+        "fav_saved": "Preset enregistré.",
+        "fav_exists": "Preset existant (écrasé).",
     },
 }
 
-def t(key: str) -> str:
-    return I18N.get(CURRENT_LANG, I18N["fr"]).get(key, key)
+def tr(lang: str, key: str) -> str:
+    return _STRINGS.get(lang, _STRINGS["en"]).get(key, key)
 
-# --- helpers / host calls -----------------------------------------------------
-
-def run_host(args: List[str]) -> Tuple[int, str, str]:
-    """Always use host for flatpak or system checks."""
-    cmd = ["flatpak-spawn", "--host"] + args
-    try:
-        p = subprocess.run(cmd, text=True, capture_output=True, check=False)
-        return p.returncode, p.stdout.strip(), p.stderr.strip()
-    except Exception as e:
-        return 1, "", str(e)
-
-def join_shell(parts: List[str]) -> str:
-    return " ".join(shlex.quote(p) for p in parts)
-
-def list_flatpaks() -> List[str]:
-    code, out, _ = run_host(["flatpak", "list", "--app", "--columns=application"])
-    if code != 0:
-        return []
-    apps, seen = [], set()
-    for line in out.splitlines():
-        s = line.strip()
-        if s and s not in seen:
-            apps.append(s); seen.add(s)
-    return apps
-
-def open_uri(uri: str):
-    Gio.AppInfo.launch_default_for_uri(uri, None)
-
-# --- persistence --------------------------------------------------------------
-
-def cfg_dir() -> str:
-    base = os.path.join(GLib.get_user_config_dir(), APP_ID)
-    os.makedirs(base, exist_ok=True)
-    return base
-
-def cfg_file() -> str:
-    global LANG_FILE
-    f = os.path.join(cfg_dir(), "settings.json")
-    LANG_FILE = f
-    return f
-
-def load_json(default: dict) -> dict:
-    try:
-        with open(cfg_file(), "r", encoding="utf-8") as f:
-            data = json.load(f)
-            if isinstance(data, dict):
-                # merge shallow
-                merged = default.copy()
-                for k, v in data.items():
-                    merged[k] = v
-                return merged
-    except Exception:
-        pass
-    return default
-
-def save_json(data: dict) -> None:
-    try:
-        with open(cfg_file(), "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2)
-    except Exception:
-        pass
-
-# --- model --------------------------------------------------------------------
+# ---------------- Settings model ----------------
 
 @dataclass
-class LSFGShared:
-    multiplier: str = "2"     # "2","3","4","6","8"
-    flow_scale: bool = False
+class Options:
+    multiplier: int = 2
+    flow_scale: int = 0
     performance: bool = False
     hdr: bool = False
-    present_mode: str = "auto" # auto/fifo/mailbox/immediate
+    present_mode: str = ""          # "" (none) or custom
     lsfg_process: str = ""
-    mangohud: bool = True
-
-@dataclass
-class PresetFlatpak:
-    name: str = ""
-    appid: str = ""
-    args: str = ""
-    shared: LSFGShared = field(default_factory=LSFGShared)
-
-@dataclass
-class PresetHost:
-    name: str = ""
-    cmd: str = ""
-    args: str = ""
-    shared: LSFGShared = field(default_factory=LSFGShared)
+    extra_args: str = ""
+    mangohud: bool = False
+    extra_layers: str = ""          # additional layers tokens (':'-separated)
 
 @dataclass
 class Settings:
-    language: str = "fr"
-    shared: LSFGShared = field(default_factory=LSFGShared)
-    flatpak_app: str = ""
-    flatpak_args: str = ""
-    host_cmd: str = ""
-    host_args: str = ""
-    presets_flatpak: List[PresetFlatpak] = field(default_factory=list)
-    presets_host: List[PresetHost] = field(default_factory=list)
-
-    @staticmethod
-    def from_dict(d: dict) -> "Settings":
-        s = Settings()
-        s.language = d.get("language", "fr")
-        s.shared = LSFGShared(**d.get("shared", {}))
-        s.flatpak_app = d.get("flatpak_app", "")
-        s.flatpak_args = d.get("flatpak_args", "")
-        s.host_cmd = d.get("host_cmd", "")
-        s.host_args = d.get("host_args", "")
-        # presets
-        s.presets_flatpak = []
-        for it in d.get("presets_flatpak", []):
-            s.presets_flatpak.append(PresetFlatpak(
-                name=it.get("name",""),
-                appid=it.get("appid",""),
-                args=it.get("args",""),
-                shared=LSFGShared(**it.get("shared", {}))
-            ))
-        s.presets_host = []
-        for it in d.get("presets_host", []):
-            s.presets_host.append(PresetHost(
-                name=it.get("name",""),
-                cmd=it.get("cmd",""),
-                args=it.get("args",""),
-                shared=LSFGShared(**it.get("shared", {}))
-            ))
-        return s
-
-    def to_dict(self) -> dict:
-        return {
-            "language": self.language,
-            "shared": asdict(self.shared),
-            "flatpak_app": self.flatpak_app,
-            "flatpak_args": self.flatpak_args,
-            "host_cmd": self.host_cmd,
-            "host_args": self.host_args,
-            "presets_flatpak": [ {"name":p.name,"appid":p.appid,"args":p.args,"shared":asdict(p.shared)} for p in self.presets_flatpak ],
-            "presets_host": [ {"name":p.name,"cmd":p.cmd,"args":p.args,"shared":asdict(p.shared)} for p in self.presets_host ],
-        }
+    lang: str = "fr"
+    last_flatpak: str = ""
+    last_host_cmd: str = ""
+    favorites: list[dict] = field(default_factory=list)   # list of {"name":..., "mode":"flatpak|host", "target":"...", "options":{...}}
+    options: Options = field(default_factory=Options)
 
 def load_settings() -> Settings:
-    global CURRENT_LANG
-    default = Settings().to_dict()
-    data = load_json(default)
-    s = Settings.from_dict(data)
-    CURRENT_LANG = s.language if s.language in I18N else "fr"
-    return s
+    if CONFIG_FILE.exists():
+        try:
+            data = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
+            # nested dataclass rebuild
+            opts = Options(**data.get("options", {}))
+            s = Settings(
+                lang=data.get("lang", "fr"),
+                last_flatpak=data.get("last_flatpak", ""),
+                last_host_cmd=data.get("last_host_cmd", ""),
+                favorites=data.get("favorites", []),
+                options=opts,
+            )
+            return s
+        except Exception:
+            pass
+    return Settings()
 
-def save_settings(s: Settings):
-    save_json(s.to_dict())
+def save_settings(s: Settings) -> None:
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    data = asdict(s)
+    CONFIG_FILE.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
 
-# --- option controls ----------------------------------------------------------
+# ---------------- Host helpers (flatpak-spawn) ----------------
 
-class OptionControls:
-    def __init__(self, shared_init: LSFGShared):
-        self.box = Adw.PreferencesGroup(title=t("opt_group"))
+def run_host(args: list[str]) -> tuple[int, str, str]:
+    """
+    Run a command on the host through flatpak-spawn --host.
+    Returns (code, stdout, stderr).
+    """
+    proc = subprocess.run(
+        ["flatpak-spawn", "--host"] + args,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    return proc.returncode, proc.stdout, proc.stderr
 
-        # Multiplier (toggle buttons)
-        row_mult = Adw.ActionRow(title=t("multiplier"))
-        self._mult = shared_init.multiplier or "2"
-        mult_box = Gtk.Box(spacing=6)
-        self._mult_buttons: List[Gtk.ToggleButton] = []
-        for label in ["2","3","4","6","8"]:
-            b = Gtk.ToggleButton(label=label)
-            b.set_active(label == self._mult)
-            b.connect("toggled", self._on_mult_toggled, label)
-            self._mult_buttons.append(b)
-            mult_box.append(b)
-        row_mult.add_suffix(mult_box)
+def host_has_flatpak() -> bool:
+    code, _, _ = run_host(["sh", "-lc", "command -v flatpak >/dev/null 2>&1"])
+    return code == 0
 
-        # Flow
-        self.row_flow = Adw.SwitchRow(title=t("flow"))
-        self.row_flow.set_active(bool(shared_init.flow_scale))
-        self.row_flow.add_suffix(self._info_btn(t("flow_tip")))
+def list_flatpaks() -> list[tuple[str, str]]:
+    """
+    Returns list of (appid, title). Uses host flatpak CLI.
+    """
+    if not host_has_flatpak():
+        return []
+    # columns: application,title are widely available
+    code, out, _ = run_host(["flatpak", "list", "--app", "--columns=application,title"])
+    if code != 0:
+        return []
+    rows = []
+    for line in out.splitlines():
+        if not line.strip():
+            continue
+        parts = line.split("\t")
+        appid = parts[0].strip()
+        title = parts[1].strip() if len(parts) > 1 else appid
+        rows.append((appid, title))
+    # sort by title
+    rows.sort(key=lambda x: x[1].lower())
+    return rows
 
-        # Perf
-        self.row_perf = Adw.SwitchRow(title=t("perf"))
-        self.row_perf.set_active(bool(shared_init.performance))
-        self.row_perf.add_suffix(self._info_btn(t("perf_tip")))
-
-        # HDR
-        self.row_hdr = Adw.SwitchRow(title=t("hdr"))
-        self.row_hdr.set_active(bool(shared_init.hdr))
-        self.row_hdr.add_suffix(self._info_btn(t("hdr_tip")))
-
-        # Present
-        pm_model = Gtk.StringList.new(["auto","fifo","mailbox","immediate"])
-        self.row_present = Adw.ComboRow(title=t("present"), model=pm_model)
-        sel = 0
-        for i in range(pm_model.get_n_items()):
-            if pm_model.get_string(i) == (shared_init.present_mode or "auto"):
-                sel = i; break
-        self.row_present.set_selected(sel)
-        self.row_present.add_suffix(self._info_btn(t("present_tip")))
-
-        # LSFG_PROCESS
-        self.row_process = Adw.EntryRow(title=t("process"))
-        self.row_process.set_text(shared_init.lsfg_process or "")
-        self.row_process.add_suffix(self._info_btn(t("process_tip")))
-
-        # MangoHud
-        self.row_mh = Adw.SwitchRow(title=t("mangohud"))
-        self.row_mh.set_active(bool(shared_init.mangohud))
-        self.row_mh.add_suffix(self._info_btn(t("mangohud_tip")))
-
-        self.box.add(row_mult)
-        self.box.add(self.row_flow)
-        self.box.add(self.row_perf)
-        self.box.add(self.row_hdr)
-        self.box.add(self.row_present)
-        self.box.add(self.row_process)
-        self.box.add(self.row_mh)
-
-    def _info_btn(self, tooltip: str):
-        btn = Gtk.Button.new_from_icon_name("dialog-information-symbolic")
-        btn.set_valign(Gtk.Align.CENTER)
-        btn.set_tooltip_text(tooltip)
-        btn.connect("clicked", lambda *a: self._info_dialog(tooltip))
-        return btn
-
-    def _info_dialog(self, text: str):
-        dlg = Adw.MessageDialog.new(None, "Info", text)
-        dlg.add_response("ok", t("ok"))
-        dlg.set_close_response("ok")
-        dlg.present()
-
-    def _on_mult_toggled(self, btn: Gtk.ToggleButton, label: str):
-        if not btn.get_active():
-            return
-        self._mult = label
-        for b in self._mult_buttons:
-            if b is not btn and b.get_active():
-                b.set_active(False)
-
-    def to_shared(self) -> LSFGShared:
-        model = self.row_present.get_model()
-        idx = self.row_present.get_selected()
-        present = model.get_string(idx) if 0 <= idx < model.get_n_items() else "auto"
-        return LSFGShared(
-            multiplier=self._mult or "2",
-            flow_scale=self.row_flow.get_active(),
-            performance=self.row_perf.get_active(),
-            hdr=self.row_hdr.get_active(),
-            present_mode=present,
-            lsfg_process=self.row_process.get_text().strip(),
-            mangohud=self.row_mh.get_active()
-        )
-
-    def set_from_shared(self, s: LSFGShared):
-        # multiplier
-        for b in self._mult_buttons:
-            b.set_active(b.get_label() == (s.multiplier or "2"))
-        self._mult = s.multiplier or "2"
-        # switches
-        self.row_flow.set_active(bool(s.flow_scale))
-        self.row_perf.set_active(bool(s.performance))
-        self.row_hdr.set_active(bool(s.hdr))
-        # present
-        model = self.row_present.get_model()
-        sel = 0
-        for i in range(model.get_n_items()):
-            if model.get_string(i) == (s.present_mode or "auto"):
-                sel = i; break
-        self.row_present.set_selected(sel)
-        # process + mh
-        self.row_process.set_text(s.lsfg_process or "")
-        self.row_mh.set_active(bool(s.mangohud))
-
-# --- main window --------------------------------------------------------------
+# ---------------- UI ----------------
 
 class MainWindow(Adw.ApplicationWindow):
     def __init__(self, app: Adw.Application, settings: Settings):
         super().__init__(application=app)
-        self.set_default_size(980, 700)
-        self.set_title(t("app_title"))
+        self.set_title(self._t("app_title"))
+        self.set_default_size(880, 640)
+
         self.settings = settings
+        self.opts = settings.options
 
-        self.toasts = Adw.ToastOverlay()
+        self._flatpaks: list[tuple[str, str]] = []  # (appid, title)
 
-        # Stack
-        self.stack = Adw.ViewStack()
+        self.header = Adw.HeaderBar()
+        self.set_titlebar(self.header)
 
-        # Flatpak page
+        self.stack = Gtk.Stack(transition_type=Gtk.StackTransitionType.SLIDE_LEFT_RIGHT)
+        self.stack.set_hexpand(True)
+        self.stack.set_vexpand(True)
+
+        # Tabs
         self.page_flatpak = self._build_flatpak_page()
-        self.stack.add_titled(self.page_flatpak, "flatpak", t("tab_flatpak"))
-
-        # Host page
         self.page_host = self._build_host_page()
-        self.stack.add_titled(self.page_host, "host", t("tab_host"))
 
-        # Help page
-        self.page_help = self._build_help_page()
-        self.stack.add_titled(self.page_help, "help", t("tab_help"))
+        self.stack.add_titled(self.page_flatpak, "flatpak", self._t("tab_flatpak"))
+        self.stack.add_titled(self.page_host, "host", self._t("tab_host"))
 
-        # Toolbar + header
-        toolbar = Adw.ToolbarView()
-        header = Adw.HeaderBar()
+        # Switcher
+        switcher = Adw.ViewSwitcher(stack=self.stack, policy=Adw.ViewSwitcherPolicy.WIDE)
+        self.header.pack_start(switcher)
 
-        switch_title = Adw.ViewSwitcherTitle()
-        switch_title.props.stack = self.stack
-        header.set_title_widget(switch_title)
-
-        # Menu button (☰)
-        header.pack_end(self._build_menu_button())
-
-        toolbar.add_top_bar(header)
-
-        switch_bar = Adw.ViewSwitcherBar()
-        switch_bar.props.stack = self.stack
-        toolbar.add_bottom_bar(switch_bar)
-
-        # Bottom actions
-        bottom = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8,
-                         margin_top=8, margin_bottom=8, margin_start=12, margin_end=12)
-        hb = Gtk.Box(spacing=8)
-        self.btn_preview = Gtk.Button(label=t("preview"))
-        self.btn_launch = Gtk.Button(label=t("launch"))
-        self.btn_check = Gtk.Button(label=t("check"))
-        self.btn_preview.connect("clicked", self.on_preview)
-        self.btn_launch.connect("clicked", self.on_launch)
-        self.btn_check.connect("clicked", self.on_check)
-        hb.append(self.btn_preview); hb.append(self.btn_launch); hb.append(self.btn_check)
-
-        self.preview = Gtk.TextView(editable=False, wrap_mode=Gtk.WrapMode.CHAR)
-        try: self.preview.set_monospace(True)
-        except Exception: pass
-        self.preview.set_size_request(-1, 160)
-        sw = Gtk.ScrolledWindow()
-        sw.set_child(self.preview)
-
-        bottom.append(hb)
-        bottom.append(sw)
+        # Menu button
+        self.header.pack_end(self._build_menu())
 
         # Root
-        root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-        root.append(self.stack)
-        root.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
-        root.append(bottom)
+        root_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+        root_box.append(self.stack)
+        self.set_content(root_box)
 
-        toolbar.set_content(root)
-        self.toasts.set_child(toolbar)
-        self.set_content(self.toasts)
+        # Load list
+        self._refresh_flatpak_list_async()
 
-        GLib.idle_add(self._reload_flatpak_list)
+    # ------------- i18n helper
+    def _t(self, key: str) -> str:
+        return tr(self.settings.lang, key)
 
-    # --- menu "☰" ---
-
-    def _build_menu_button(self) -> Gtk.Widget:
+    # ------------- Menu
+    def _build_menu(self) -> Gtk.MenuButton:
         menu = Gio.Menu()
+        # Language sub-menu
+        lang_menu = Gio.Menu()
+        lang_menu.append(self._t("lang_en"), "app.lang_en")
+        lang_menu.append(self._t("lang_fr"), "app.lang_fr")
 
-        # Language
-        sec_lang = Gio.Menu()
-        sec_lang.append(t("fr"), "app.set-language::fr")
-        sec_lang.append(t("en"), "app.set-language::en")
-        menu.append_section(t("lang"), sec_lang)
+        # Links sub-menu
+        links = Gio.Menu()
+        links.append(self._t("link_lsfg"), "app.link_lsfg")
+        links.append(self._t("link_mangohud"), "app.link_mangohud")
+        links.append(self._t("link_goverlay"), "app.link_goverlay")
 
-        # Links
-        sec_links = Gio.Menu()
-        sec_links.append(t("link_lsfg"), "app.open-link::https://github.com/PancakeTAS/lsfg-vk/wiki")
-        sec_links.append(t("link_mh"), "app.open-link::https://github.com/flightlessmango/MangoHud")
-        sec_links.append(t("link_mh_flatpak"), "app.open-link::https://flathub.org/apps/details/org.freedesktop.Platform.VulkanLayer.MangoHud")
-        sec_links.append(t("link_goverlay"), "app.open-link::https://github.com/benjamimgois/goverlay")
-        menu.append_section(t("links"), sec_links)
+        menu.append_section(self._t("language"), lang_menu)
+        menu.append_section(self._t("links"), links)
 
-        # Config actions
-        sec_cfg = Gio.Menu()
-        sec_cfg.append(t("open_cfg"), "app.open-config")
-        sec_cfg.append(t("export"), "app.export")
-        sec_cfg.append(t("import"), "app.import")
-        sec_cfg.append(t("reset"), "app.reset")
-        menu.append_section("Config", sec_cfg)
+        actions = Gio.Menu()
+        actions.append(self._t("open_config"), "app.open_config")
+        actions.append(self._t("export_settings"), "app.export_settings")
+        actions.append(self._t("import_settings"), "app.import_settings")
+        actions.append(self._t("reset_settings"), "app.reset_settings")
+        menu.append_section(self._t("menu"), actions)
 
-        # About
-        about_sec = Gio.Menu()
-        about_sec.append(t("about"), "app.about")
-        menu.append_section(None, about_sec)
-
-        # Button
-        btn = Adw.MenuButton()
+        btn = Gtk.MenuButton()
         btn.set_icon_name("open-menu-symbolic")
         btn.set_menu_model(menu)
-        btn.set_tooltip_text(t("menu"))
         return btn
 
-    # --- Flatpak page ---
-
+    # ------------- Page: Flatpak
     def _build_flatpak_page(self) -> Adw.PreferencesPage:
         page = Adw.PreferencesPage()
 
-        # Favorites (flatpak)
-        fav_grp = Adw.PreferencesGroup(title=t("fav_group"))
-        self.fp_preset_model = Gtk.StringList.new([])
-        self.fp_preset_combo = Adw.ComboRow(title=t("fav_combo"), model=self.fp_preset_model)
-        fav_btns = Gtk.Box(spacing=6)
-        b_save = Gtk.Button(label=t("fav_save"))
-        b_load = Gtk.Button(label=t("fav_load"))
-        b_run  = Gtk.Button(label=t("fav_run"))
-        b_del  = Gtk.Button(label=t("fav_delete"))
-        b_save.connect("clicked", self._fp_preset_save)
-        b_load.connect("clicked", self._fp_preset_load)
-        b_run.connect("clicked", self._fp_preset_run)
-        b_del.connect("clicked", self._fp_preset_delete)
-        for b in (b_save,b_load,b_run,b_del): fav_btns.append(b)
-        self.fp_preset_combo.add_suffix(fav_btns)
-        fav_grp.add(self.fp_preset_combo)
-
         # Target group
-        grp = Adw.PreferencesGroup(title=t("flatpak_group"))
+        grp_target = Adw.PreferencesGroup(title=self._t("target_app"))
 
-        self.flatpak_model = Gtk.StringList.new([])
-        self.flatpak_combo = Adw.ComboRow(title=t("flatpak_app"), subtitle=t("flatpak_choose"),
-                                          model=self.flatpak_model)
-        try: self.flatpak_combo.set_use_subtitle(True)
-        except Exception: pass
+        # App selector (DropDown)
+        self.flatpak_string_list = Gtk.StringList.new([])
+        self.dd_flatpak = Gtk.DropDown(model=self.flatpak_string_list, enable_search=True)
+        self.dd_flatpak.set_hexpand(True)
+        self._flatpak_ids: list[str] = []
 
-        self.flatpak_icon = Gtk.Image.new_from_icon_name("application-x-executable-symbolic")
-        self.flatpak_icon.set_pixel_size(24)
-        self.flatpak_combo.add_suffix(self.flatpak_icon)
+        row_app = Adw.ActionRow(title=self._t("pick_flatpak"))
+        row_app.add_suffix(self.dd_flatpak)
+        row_app.set_activatable_widget(self.dd_flatpak)
+        grp_target.add(row_app)
 
-        btn_refresh = Gtk.Button.new_from_icon_name("view-refresh-symbolic")
-        btn_refresh.set_tooltip_text("Refresh")
-        btn_refresh.connect("clicked", lambda *_: self._reload_flatpak_list())
-        self.flatpak_combo.add_suffix(btn_refresh)
-        self.flatpak_combo.connect("notify::selected", self._on_flatpak_selected)
+        # Extra args
+        self.row_flatpak_args = Adw.EntryRow(title=self._t("target_extra_args"))
+        self.row_flatpak_args.set_text(self.opts.extra_args or "")
+        grp_target.add(self.row_flatpak_args)
 
-        self.flatpak_args = Adw.EntryRow(title=t("flatpak_args"),
-                                         text=self.settings.flatpak_args or "")
-        self.flatpak_args.add_suffix(self._info_btn(t("flatpak_args_tip")))
+        # Options group (shared widgets)
+        grp_opts = self._build_options_group()
 
-        hint = Adw.ActionRow(title=t("note"), subtitle=t("note_text"))
+        # Favorites group
+        grp_fav = self._build_favorites_group(mode="flatpak")
 
-        grp.add(self.flatpak_combo)
-        grp.add(self.flatpak_args)
-        grp.add(hint)
+        # Actions
+        grp_actions = Adw.PreferencesGroup()
+        box_btn = Gtk.Box(spacing=8)
+        self.btn_preview_f = Gtk.Button(label=self._t("preview"))
+        self.btn_check_f = Gtk.Button(label=self._t("check"))
+        self.btn_launch_f = Gtk.Button(label=self._t("launch"))
+        box_btn.append(self.btn_preview_f)
+        box_btn.append(self.btn_check_f)
+        box_btn.append(self.btn_launch_f)
+        grp_actions.add(box_btn)
 
-        # Options (shared)
-        self.ctrl_flatpak = OptionControls(self.settings.shared)
+        # Connect callbacks
+        self.btn_preview_f.connect("clicked", self._on_preview_flatpak)
+        self.btn_check_f.connect("clicked", self._on_check_flatpak)
+        self.btn_launch_f.connect("clicked", self._on_launch_flatpak)
 
-        # Build page
-        page.add(fav_grp)
-        page.add(grp)
-        page.add(self.ctrl_flatpak.box)
-
-        # Fill favorites
-        self._refresh_fp_presets()
+        page.add(grp_target)
+        page.add(grp_opts)
+        page.add(grp_fav)
+        page.add(grp_actions)
         return page
 
-    # --- Host page ---
-
+    # ------------- Page: Host
     def _build_host_page(self) -> Adw.PreferencesPage:
         page = Adw.PreferencesPage()
 
-        # Favorites (host)
-        fav_grp = Adw.PreferencesGroup(title=t("fav_group"))
-        self.h_preset_model = Gtk.StringList.new([])
-        self.h_preset_combo = Adw.ComboRow(title=t("fav_combo"), model=self.h_preset_model)
-        fav_btns = Gtk.Box(spacing=6)
-        b_save = Gtk.Button(label=t("fav_save"))
-        b_load = Gtk.Button(label=t("fav_load"))
-        b_run  = Gtk.Button(label=t("fav_run"))
-        b_del  = Gtk.Button(label=t("fav_delete"))
-        b_save.connect("clicked", self._h_preset_save)
-        b_load.connect("clicked", self._h_preset_load)
-        b_run.connect("clicked", self._h_preset_run)
-        b_del.connect("clicked", self._h_preset_delete)
-        for b in (b_save,b_load,b_run,b_del): fav_btns.append(b)
-        self.h_preset_combo.add_suffix(fav_btns)
-        fav_grp.add(self.h_preset_combo)
+        grp_target = Adw.PreferencesGroup(title=self._t("target_host_cmd"))
+        self.row_host_cmd = Adw.EntryRow(title=self._t("target_host_cmd"))
+        self.row_host_cmd.set_text(self.settings.last_host_cmd or "")
+        self.row_host_cmd.set_show_apply_button(False)
+        self.row_host_cmd.set_input_purpose(Gtk.InputPurpose.FREE_FORM)
+        self.row_host_cmd.set_attributes([Gtk.Attribute.new("placeholder-text", self._t("host_cmd_placeholder"))])  # visual hint
+        grp_target.add(self.row_host_cmd)
 
-        # Target group
-        grp = Adw.PreferencesGroup(title=t("host_group"))
+        self.row_host_args = Adw.EntryRow(title=self._t("target_extra_args"))
+        self.row_host_args.set_text(self.opts.extra_args or "")
+        grp_target.add(self.row_host_args)
 
-        self.host_cmd = Adw.EntryRow(title=t("host_cmd"),
-                                     text=self.settings.host_cmd or "")
-        self.host_cmd.add_suffix(self._info_btn(t("host_cmd_tip")))
+        grp_opts = self._build_options_group()
 
-        self.host_args = Adw.EntryRow(title=t("host_args"),
-                                      text=self.settings.host_args or "")
-        self.host_args.add_suffix(self._info_btn(t("host_args_tip")))
+        grp_fav = self._build_favorites_group(mode="host")
 
-        grp.add(self.host_cmd)
-        grp.add(self.host_args)
+        grp_actions = Adw.PreferencesGroup()
+        box_btn = Gtk.Box(spacing=8)
+        self.btn_preview_h = Gtk.Button(label=self._t("preview"))
+        self.btn_check_h = Gtk.Button(label=self._t("check"))
+        self.btn_launch_h = Gtk.Button(label=self._t("launch"))
+        box_btn.append(self.btn_preview_h)
+        box_btn.append(self.btn_check_h)
+        box_btn.append(self.btn_launch_h)
+        grp_actions.add(box_btn)
 
-        self.ctrl_host = OptionControls(self.settings.shared)
+        self.btn_preview_h.connect("clicked", self._on_preview_host)
+        self.btn_check_h.connect("clicked", self._on_check_host)
+        self.btn_launch_h.connect("clicked", self._on_launch_host)
 
-        page.add(fav_grp)
-        page.add(grp)
-        page.add(self.ctrl_host.box)
-
-        self._refresh_h_presets()
+        page.add(grp_target)
+        page.add(grp_opts)
+        page.add(grp_fav)
+        page.add(grp_actions)
         return page
 
-    # --- Help page with integrations ---
+    # ------------- Shared Options group
+    def _build_options_group(self) -> Adw.PreferencesGroup:
+        grp = Adw.PreferencesGroup(title=self._t("options"))
 
-    def _build_help_page(self) -> Adw.PreferencesPage:
-        page = Adw.PreferencesPage()
+        # Multiplier
+        self.row_mult = Adw.ComboRow(title=self._t("multiplier"))
+        mults = ["2", "3", "4", "6", "8"]
+        self._mult_list = Gtk.StringList.new(mults)
+        self.row_mult.set_model(self._mult_list)
+        try:
+            idx = mults.index(str(self.opts.multiplier))
+        except ValueError:
+            idx = 0
+        self.row_mult.set_selected(idx)
+        grp.add(self.row_mult)
 
-        grp = Adw.PreferencesGroup(title=t("help_group"))
-        grp.add(Adw.ActionRow(title=t("help_tip1")))
-        grp.add(Adw.ActionRow(title=t("help_tip2")))
+        # Flow scale (0..3)
+        adj = Gtk.Adjustment(lower=0, upper=8, step_increment=1, page_increment=1, page_size=0)
+        self.row_flow = Adw.SpinRow(title=self._t("flow_scale"), adjustment=adj)
+        self.row_flow.set_value(float(self.opts.flow_scale))
+        grp.add(self.row_flow)
 
-        integ = Adw.PreferencesGroup(title=t("integrations"))
-        b1 = Gtk.Button(label=t("copy_steam"));  b1.connect("clicked", self._copy_steam)
-        b2 = Gtk.Button(label=t("copy_heroic")); b2.connect("clicked", self._copy_heroic)
-        b3 = Gtk.Button(label=t("copy_lutris")); b3.connect("clicked", self._copy_lutris)
+        # Performance
+        self.row_perf = Adw.SwitchRow(title=self._t("performance"))
+        self.row_perf.set_active(self.opts.performance)
+        grp.add(self.row_perf)
 
-        hb = Gtk.Box(spacing=6)
-        hb.append(b1); hb.append(b2); hb.append(b3)
-        row = Adw.ActionRow(title="")
-        row.add_suffix(hb)
-        integ.add(row)
+        # HDR
+        self.row_hdr = Adw.SwitchRow(title=self._t("hdr"))
+        self.row_hdr.set_active(self.opts.hdr)
+        grp.add(self.row_hdr)
 
-        page.add(grp)
-        page.add(integ)
-        return page
+        # Present mode (free text for now; empty=none)
+        self.row_present = Adw.EntryRow(title=self._t("present_mode"))
+        self.row_present.set_text(self.opts.present_mode or "")
+        grp.add(self.row_present)
 
-    # --- small helpers ---
+        # LSFG_PROCESS
+        self.row_lsfg_proc = Adw.EntryRow(title=self._t("lsfg_process"))
+        self.row_lsfg_proc.set_text(self.opts.lsfg_process or "")
+        grp.add(self.row_lsfg_proc)
 
-    def _info_btn(self, tooltip: str):
-        btn = Gtk.Button.new_from_icon_name("dialog-information-symbolic")
-        btn.set_valign(Gtk.Align.CENTER)
-        btn.set_tooltip_text(tooltip)
-        btn.connect("clicked", lambda *a: self._dialog_info(tooltip))
-        return btn
+        # Extra layers (append to VK_INSTANCE_LAYERS)
+        self.row_extra_layers = Adw.EntryRow(title="Extra Vulkan layers (':' separated)")
+        self.row_extra_layers.set_text(self.opts.extra_layers or "")
+        grp.add(self.row_extra_layers)
 
-    def _dialog_info(self, text: str):
-        dlg = Adw.MessageDialog.new(self.get_root(), "Info", text)
-        dlg.add_response("ok", t("ok"))
-        dlg.set_close_response("ok")
-        dlg.present()
+        # MangoHud
+        self.row_mangohud = Adw.SwitchRow(title=self._t("mangohud"))
+        self.row_mangohud.set_active(self.opts.mangohud)
+        grp.add(self.row_mangohud)
 
-    def _set_preview(self, text: str):
-        self.preview.get_buffer().set_text(text)
+        # Extra args (shared default) — NOTE: per-page also exists; we keep this as "default"
+        # (Kept minimal to avoid duplicate UI; pages have their own "args" entry.)
 
-    def _toast(self, text: str):
-        self.toasts.add_toast(Adw.Toast.new(text))
+        return grp
 
-    def _copy_text(self, text: str):
-        disp = Gdk.Display.get_default()
-        if disp:
-            cb = disp.get_clipboard()
-            cb.set_text(text)
-            self._toast(t("copied"))
+    # ------------- Favorites group
+    def _build_favorites_group(self, mode: str) -> Adw.PreferencesGroup:
+        grp = Adw.PreferencesGroup(title=self._t("favorites"))
 
-    # --- Flatpak list & icon ---
+        row = Adw.ActionRow(title=self._t("fav_name"))
+        self.fav_name_entry = Gtk.Entry()
+        self.fav_name_entry.set_hexpand(True)
+        row.add_suffix(self.fav_name_entry)
+        grp.add(row)
 
-    def _reload_flatpak_list(self):
-        apps = list_flatpaks()
-        self.flatpak_model.splice(0, self.flatpak_model.get_n_items(), apps)
-        if self.settings.flatpak_app and self.settings.flatpak_app in apps:
-            self.flatpak_combo.set_selected(apps.index(self.settings.flatpak_app))
-        elif apps:
-            self.flatpak_combo.set_selected(0)
-        self._update_flatpak_icon()
+        box_btn = Gtk.Box(spacing=6)
+        self.btn_fav_save = Gtk.Button(label=self._t("fav_save"))
+        self.btn_fav_load = Gtk.Button(label=self._t("fav_load"))
+        self.btn_fav_run = Gtk.Button(label=self._t("fav_run"))
+        self.btn_fav_del = Gtk.Button(label=self._t("fav_delete"))
+        for b in (self.btn_fav_save, self.btn_fav_load, self.btn_fav_run, self.btn_fav_del):
+            box_btn.append(b)
 
-    def _on_flatpak_selected(self, *_):
-        self._update_flatpak_icon()
-        idx = self.flatpak_combo.get_selected()
-        if 0 <= idx < self.flatpak_model.get_n_items():
-            self.settings.flatpak_app = self.flatpak_model.get_string(idx)
-            save_settings(self.settings)
+        # Fav list dropdown
+        self.fav_list = Gtk.StringList.new([f["name"] for f in self.settings.favorites if f.get("mode") == mode])
+        self.dd_fav = Gtk.DropDown(model=self.fav_list, enable_search=True)
+        self.dd_fav.set_hexpand(True)
 
-    def _update_flatpak_icon(self):
-        idx = self.flatpak_combo.get_selected()
-        name = ""
-        if 0 <= idx < self.flatpak_model.get_n_items():
-            name = self.flatpak_model.get_string(idx)
-        # Essayons l’icône AppID, sinon fallback
-        self.flatpak_icon.set_from_icon_name(name or "application-x-executable-symbolic")
+        row2 = Adw.ActionRow()
+        row2.add_suffix(self.dd_fav)
+        row2.add_suffix(box_btn)
+        grp.add(row2)
 
-    # --- Collect options / build env ---
+        # callbacks (use lambda capture of mode)
+        self.btn_fav_save.connect("clicked", lambda *_: self._on_fav_save(mode))
+        self.btn_fav_load.connect("clicked", lambda *_: self._on_fav_load(mode))
+        self.btn_fav_run.connect("clicked", lambda *_: self._on_fav_run(mode))
+        self.btn_fav_del.connect("clicked", lambda *_: self._on_fav_delete(mode))
+        return grp
 
-    def _collect_shared(self) -> LSFGShared:
-        # on considère la section Flatpak comme source
-        s = self.ctrl_flatpak.to_shared()
-        # synchronise Host
-        self.ctrl_host.set_from_shared(s)
-        return s
+    # ------------- Flatpak list loading
+    def _refresh_flatpak_list_async(self):
+        def work(_task, _src, _data, _cancellable):
+            return list_flatpaks()
 
-    def _env_kv(self, s: LSFGShared) -> List[str]:
-        env = [
-            f"LSFG_MULTIPLIER={s.multiplier or '2'}",
-            f"LSFG_FLOW_SCALE={'1' if s.flow_scale else '0'}",
-            f"LSFG_PERFORMANCE_MODE={'1' if s.performance else '0'}",
-            f"LSFG_HDR_MODE={'1' if s.hdr else '0'}",
-            "VK_INSTANCE_LAYERS=lsfg_vk",
-        ]
-        if s.present_mode and s.present_mode != "auto":
-            env.append(f"LSFG_PRESENT_MODE={s.present_mode}")
-        if s.lsfg_process:
-            env.append(f"LSFG_PROCESS={s.lsfg_process}")
-        if s.mangohud:
-            env.append("MANGOHUD=1")
+        def done(_obj, res, _data):
+            try:
+                rows = res.propagate_value()
+            except Exception:
+                rows = []
+            self._flatpaks = rows
+            self.flatpak_string_list.splice(0, self.flatpak_string_list.get_n_items(), [])
+            self._flatpak_ids = []
+            for appid, title in rows:
+                self.flatpak_string_list.append(f"{title}  ⟂  {appid}")
+                self._flatpak_ids.append(appid)
+            # restore last selected
+            if self.settings.last_flatpak and self._flatpak_ids:
+                try:
+                    idx = self._flatpak_ids.index(self.settings.last_flatpak)
+                    self.dd_flatpak.set_selected(idx)
+                except ValueError:
+                    pass
+
+        GLib.Task.new(None, None, done).run_in_thread(work, None)
+
+    # ------------- Env builder
+    def _build_env(self) -> dict[str, str]:
+        env: dict[str, str] = {}
+        # read current UI
+        mult = int(["2","3","4","6","8"][self.row_mult.get_selected()])
+        flow = int(self.row_flow.get_value())
+        perf = self.row_perf.get_active()
+        hdr  = self.row_hdr.get_active()
+        present = self.row_present.get_text().strip()
+        lsfg_proc = self.row_lsfg_proc.get_text().strip()
+        extra_layers = self.row_extra_layers.get_text().strip()
+        mangohud = self.row_mangohud.get_active()
+
+        env["LSFG_MULTIPLIER"] = str(mult)
+        env["LSFG_FLOW_SCALE"] = str(flow)
+        env["LSFG_PERFORMANCE_MODE"] = "1" if perf else "0"
+        env["LSFG_HDR_MODE"] = "1" if hdr else "0"
+        if present:
+            env["LSFG_PRESENT_MODE"] = present
+        if lsfg_proc:
+            env["LSFG_PROCESS"] = lsfg_proc
+
+        layers = ["lsfg_vk"]
+        if mangohud:
+            layers.append("VK_LAYER_MANGOHUD_overlay")
+            env["MANGOHUD"] = "1"
+        if extra_layers:
+            layers.extend([tok for tok in extra_layers.split(":") if tok])
+
+        env["VK_INSTANCE_LAYERS"] = ":".join(layers)
         return env
 
-    def _as_flatpak_env_flags(self, env_kv: List[str]) -> List[str]:
-        return [f"--env={kv}" for kv in env_kv]
+    # ------------- Helpers for command construction
+    @staticmethod
+    def _env_to_flatpak_args(env: dict[str, str]) -> list[str]:
+        args: list[str] = []
+        for k, v in env.items():
+            args += ["--env", f"{k}={v}"]
+        return args
 
-    # --- Commands builders ---
+    @staticmethod
+    def _env_prefix_shell(env: dict[str, str]) -> str:
+        return " ".join(f"{k}={shlex.quote(v)}" for k, v in env.items())
 
-    def _cmd_flatpak(self) -> List[str]:
-        s = self._collect_shared()
-        self.settings.shared = s
-        self.settings.flatpak_args = (self.flatpak_args.get_text() or "").strip()
-        idx = self.flatpak_combo.get_selected()
-        if idx < 0 or idx >= self.flatpak_model.get_n_items():
-            raise RuntimeError(t("select_flatpak"))
-        appid = self.flatpak_model.get_string(idx)
-        self.settings.flatpak_app = appid
-
-        env = self._env_kv(s)
-        args = shlex.split(self.settings.flatpak_args) if self.settings.flatpak_args else []
-
-        cmd = ["flatpak-spawn", "--host", "flatpak", "run"]
-        cmd += self._as_flatpak_env_flags(env)  # IMPORTANT: avant l’AppID
-        cmd.append(appid)
-        cmd += args
-        return cmd
-
-    def _cmd_host(self) -> List[str]:
-        s = self._collect_shared()
-        self.settings.shared = s
-
-        self.settings.host_cmd  = (self.host_cmd.get_text() or "").strip()
-        self.settings.host_args = (self.host_args.get_text() or "").strip()
-        if not self.settings.host_cmd:
-            raise RuntimeError(t("host_need_exe"))
-
-        env = self._env_kv(s)
-        args = shlex.split(self.settings.host_args) if self.settings.host_args else []
-        return ["flatpak-spawn", "--host", "env", *env, self.settings.host_cmd, *args]
-
-    # --- Preview / Launch / Check ---
-
-    def on_preview(self, *_):
-        try:
-            cmd = self._cmd_host() if self.stack.get_visible_child_name() == "host" else self._cmd_flatpak()
-            save_settings(self.settings)
-            self._set_preview(join_shell(cmd))
-        except Exception as e:
-            self._set_preview(f"# ERROR: {e}")
-
-    def on_launch(self, *_):
-        s = self._collect_shared()
-        # MangoHud presence hints
-        if s.mangohud:
-            if self.stack.get_visible_child_name() == "host":
-                if not self._check_mangohud_host():
-                    self._toast(t("mangohud_missing_host"))
-            else:
-                if not self._check_mangohud_flatpak():
-                    self._toast(t("mangohud_missing_flatpak"))
-        # Build & run
-        try:
-            cmd = self._cmd_host() if self.stack.get_visible_child_name() == "host" else self._cmd_flatpak()
-            save_settings(self.settings)
-        except Exception as e:
-            self._show_error(t("build_err"), str(e))
-            self.on_preview()
-            return
-        try:
-            Gio.Subprocess.new(cmd, Gio.SubprocessFlags.NONE)
-            self.on_preview()
-        except Exception as e:
-            self._show_error(t("launch_fail"), str(e))
-            self.on_preview()
-
-    def on_check(self, *_):
-        try:
-            is_host = (self.stack.get_visible_child_name() == "host")
-            s = self._collect_shared()
-            env = self._env_kv(s)
-
-            if is_host:
-                # Host check
-                script = f"""
-echo '{t("host_check_title")}'
-echo '{t("env_to_inject")}'
-printf '%s\\n' {" ".join(shlex.quote(e) for e in env)}
-
-echo
-echo '{t("layer_host")}'
-for d in /usr/share/vulkan/explicit_layer.d /usr/local/share/vulkan/explicit_layer.d /etc/vulkan/explicit_layer.d; do
-  ls "$d"/*lsfg*json 2>/dev/null && echo "OK: $d" && FOUND=1 && break
-done
-[ -n "$FOUND" ] || echo '{t("layer_missing_host")}'
-
-echo
-echo '{t("mangohud_host")}'
-command -v mangohud >/dev/null && echo '{t("mangohud_ok")}' || echo '{t("mangohud_no")}'
-"""
-                code, out, err = run_host(["sh","-lc", script])
-                txt = (out + ("\n[stderr]\n"+err if err else "")).strip()
-
-            else:
-                # Flatpak check
-                idx = self.flatpak_combo.get_selected()
-                if idx < 0 or idx >= self.flatpak_model.get_n_items():
-                    raise RuntimeError(t("select_flatpak"))
-                appid = self.flatpak_model.get_string(idx)
-
-                # Runtime info (best-effort)
-                rcode, rtext, _ = run_host(["flatpak","info","--show-runtime",appid])
-                runtime_line = rtext.strip() if rcode == 0 else ""
-
-                env_flags = [f"--env={kv}" for kv in env]
-                script = f"""
-echo '{t("fp_check_title")}'
-echo '{t("env_inside")}'
-env | grep -E '^(LSFG_|VK_INSTANCE_LAYERS|MANGOHUD)'
-
-echo
-echo 'Runtime: {runtime_line}'
-
-echo
-echo '{t("layer_flatpak")}'
-for d in /usr/share/vulkan/explicit_layer.d /usr/etc/vulkan/explicit_layer.d /etc/vulkan/explicit_layer.d; do
-  ls "$d"/*lsfg*json 2>/dev/null && echo "OK: $d" && FOUND=1 && break
-done
-[ -n "$FOUND" ] || echo '{t("layer_missing_fp")}'
-
-echo
-echo '{t("mangohud_fp")}'
-env | grep -q '^MANGOHUD=1' && echo '{t("mangohud_req")}'
-"""
-                code, out, err = run_host(["flatpak","run", *env_flags, "--command=sh", appid, "-lc", script])
-                txt = (out + ("\n[stderr]\n"+err if err else "")).strip()
-
-            self._set_preview(txt)
-        except Exception as e:
-            self._set_preview(f"# CHECK ERROR: {e}")
-
-    # --- MangoHud presence checks ---
-
-    def _check_mangohud_host(self) -> bool:
-        code, out, _ = run_host(["sh", "-lc", "command -v mangohud || true"])
-        return bool(out.strip())
-
-    def _check_mangohud_flatpak(self) -> bool:
-        code, out, _ = run_host(["flatpak", "list", "--columns=application,branch"])
-        if code != 0:
-            return False
-        for line in out.splitlines():
-            if line.startswith("org.freedesktop.Platform.VulkanLayer.MangoHud"):
-                return True
-        return False
-
-    # --- Presets: Flatpak ---
-
-    def _refresh_fp_presets(self):
-        names = [p.name or f"{p.appid}" for p in self.settings.presets_flatpak]
-        self.fp_preset_model.splice(0, self.fp_preset_model.get_n_items(), names)
-
-    def _fp_preset_save(self, *_):
-        idx = self.flatpak_combo.get_selected()
-        if idx < 0 or idx >= self.flatpak_model.get_n_items():
-            self._show_error("Preset", t("select_flatpak")); return
-        appid = self.flatpak_model.get_string(idx)
-        args = (self.flatpak_args.get_text() or "").strip()
-        shared = self.ctrl_flatpak.to_shared()
-
-        # Ask name
-        name = self._ask_text(t("ask_name"), t("ask_name_body"),
-                              default=t("fav_default_name").format(name=appid, mult=shared.multiplier))
-        if not name:
-            return
-        self.settings.presets_flatpak.append(PresetFlatpak(name=name, appid=appid, args=args, shared=shared))
-        save_settings(self.settings)
-        self._refresh_fp_presets()
-        self._toast(t("saved"))
-
-    def _fp_preset_load(self, *_):
-        i = self.fp_preset_combo.get_selected()
-        if 0 <= i < len(self.settings.presets_flatpak):
-            p = self.settings.presets_flatpak[i]
-            # set fields
-            apps = [self.flatpak_model.get_string(k) for k in range(self.flatpak_model.get_n_items())]
-            if p.appid in apps:
-                self.flatpak_combo.set_selected(apps.index(p.appid))
-            self.flatpak_args.set_text(p.args or "")
-            self.ctrl_flatpak.set_from_shared(p.shared)
-            # sync host controls too
-            self.ctrl_host.set_from_shared(p.shared)
-            self._toast(t("saved"))
-
-    def _fp_preset_run(self, *_):
-        self._fp_preset_load()
-        self.on_launch()
-
-    def _fp_preset_delete(self, *_):
-        i = self.fp_preset_combo.get_selected()
-        if 0 <= i < len(self.settings.presets_flatpak):
-            del self.settings.presets_flatpak[i]
-            save_settings(self.settings)
-            self._refresh_fp_presets()
-            self._toast(t("deleted"))
-
-    # --- Presets: Host ---
-
-    def _refresh_h_presets(self):
-        names = [p.name or f"{p.cmd}" for p in self.settings.presets_host]
-        self.h_preset_model.splice(0, self.h_preset_model.get_n_items(), names)
-
-    def _h_preset_save(self, *_):
-        cmd = (self.host_cmd.get_text() or "").strip()
-        if not cmd:
-            self._show_error("Preset", t("host_need_exe")); return
-        args = (self.host_args.get_text() or "").strip()
-        shared = self.ctrl_host.to_shared()
-        name = self._ask_text(t("ask_name"), t("ask_name_body"),
-                              default=t("fav_default_name").format(name=os.path.basename(cmd), mult=shared.multiplier))
-        if not name:
-            return
-        self.settings.presets_host.append(PresetHost(name=name, cmd=cmd, args=args, shared=shared))
-        save_settings(self.settings)
-        self._refresh_h_presets()
-        self._toast(t("saved"))
-
-    def _h_preset_load(self, *_):
-        i = self.h_preset_combo.get_selected()
-        if 0 <= i < len(self.settings.presets_host):
-            p = self.settings.presets_host[i]
-            self.host_cmd.set_text(p.cmd or "")
-            self.host_args.set_text(p.args or "")
-            self.ctrl_host.set_from_shared(p.shared)
-            self.ctrl_flatpak.set_from_shared(p.shared)
-            self._toast(t("saved"))
-
-    def _h_preset_run(self, *_):
-        self._h_preset_load()
-        self.on_launch()
-
-    def _h_preset_delete(self, *_):
-        i = self.h_preset_combo.get_selected()
-        if 0 <= i < len(self.settings.presets_host):
-            del self.settings.presets_host[i]
-            save_settings(self.settings)
-            self._refresh_h_presets()
-            self._toast(t("deleted"))
-
-    # --- Ask text helper ---
-
-    def _ask_text(self, title: str, body: str, default: str="") -> Optional[str]:
-        dlg = Adw.MessageDialog.new(self.get_root(), title, body)
-        entry = Gtk.Entry()
-        entry.set_text(default)
-        entry.set_activates_default(True)
-        box = Gtk.Box()
-        box.append(entry)
-        dlg.set_extra_child(box)
-        dlg.add_response("ok", t("ok"))
-        dlg.add_response("cancel", t("cancel"))
-        dlg.set_close_response("cancel")
-        dlg.set_default_response("ok")
-        dlg.present()
-
-        done = GLib.MainLoop()
-        result = {"text": None}
-
-        def on_response(d, resp):
-            if resp == "ok":
-                result["text"] = entry.get_text().strip()
-            done.quit()
-
-        dlg.connect("response", on_response)
-        done.run()
-        return result["text"]
-
-    # --- Generators: Steam/Heroic/Lutris ---
-
-    def _gen_env_lines(self) -> Tuple[str,str,str]:
-        s = self._collect_shared()
-        env = self._env_kv(s)
-        # Steam expects env before %command%
-        steam = " ".join(env + ["%command%"])
-        heroic = "\n".join(env)  # to paste in UI
-        lutris = "\n".join(env)  # env block
-        return steam, heroic, lutris
-
-    def _copy_steam(self, *_):
-        steam, _, _ = self._gen_env_lines()
-        self._copy_text(steam)
-
-    def _copy_heroic(self, *_):
-        _, heroic, _ = self._gen_env_lines()
-        self._copy_text(heroic)
-
-    def _copy_lutris(self, *_):
-        _, _, lutris = self._gen_env_lines()
-        self._copy_text(lutris)
-
-    # --- Errors ---
-
-    def _show_error(self, title: str, body: str):
-        dlg = Adw.MessageDialog.new(self.get_root(), title, body)
-        dlg.add_response("ok", t("ok"))
+    # ------------- Dialog helpers
+    def _message(self, title: str, body: str):
+        dlg = Adw.MessageDialog.new(self, title, body)
+        dlg.add_response("ok", self._t("ok"))
         dlg.set_close_response("ok")
         dlg.present()
 
-# --- Application with actions (menu) ------------------------------------------
+    # ------------- Flatpak actions
+    def _on_preview_flatpak(self, _btn):
+        if not host_has_flatpak():
+            self._message(self._t("error"), self._t("no_flatpak_cli"))
+            return
+        idx = int(self.dd_flatpak.get_selected())
+        if idx < 0 or idx >= len(self._flatpak_ids):
+            self._message(self._t("error"), self._t("no_selection"))
+            return
+        appid = self._flatpak_ids[idx]
+        env = self._build_env()
+        extra = shlex.split(self.row_flatpak_args.get_text().strip()) if self.row_flatpak_args.get_text() else []
+        cmd = ["flatpak-spawn","--host","flatpak","run"] + self._env_to_flatpak_args(env) + [appid] + extra
+        self._message("Preview", " ".join(shlex.quote(x) for x in cmd))
+
+    def _on_check_flatpak(self, _btn):
+        if not host_has_flatpak():
+            self._message(self._t("error"), self._t("no_flatpak_cli"))
+            return
+        idx = int(self.dd_flatpak.get_selected())
+        if idx < 0 or idx >= len(self._flatpak_ids):
+            self._message(self._t("error"), self._t("no_selection"))
+            return
+        appid = self._flatpak_ids[idx]
+        env = self._build_env()
+        extra = ""  # we just check
+        env_args = self._env_to_flatpak_args(env)
+        # Run a shell inside the app sandbox to inspect env and layers
+        shell = (
+            "set -e; "
+            "echo '=== ENV (partial) ==='; "
+            "env | grep -E '^(LSFG_|MANGOHUD=|VK_INSTANCE_LAYERS=)'; "
+            "echo; echo '=== Layer JSON search ==='; "
+            "for d in /usr/share/vulkan/explicit_layer.d /app/share/vulkan/explicit_layer.d; do "
+            "  test -d \"$d\" && grep -l -i lsfg \"$d\"/*.json 2>/dev/null || true; "
+            "done; "
+            "echo; echo 'OK'; "
+        )
+        cmd = ["flatpak-spawn","--host","flatpak","run"] + env_args + ["--command=sh", appid, "-lc", shell]
+        code, out, err = run_host(cmd[2:])  # skip first two since run_host re-adds --host
+        self._message(self._t("injection_result"), (out or "") + ("\n" + err if err else ""))
+
+    def _on_launch_flatpak(self, _btn):
+        if not host_has_flatpak():
+            self._message(self._t("error"), self._t("no_flatpak_cli"))
+            return
+        idx = int(self.dd_flatpak.get_selected())
+        if idx < 0 or idx >= len(self._flatpak_ids):
+            self._message(self._t("error"), self._t("no_selection"))
+            return
+        appid = self._flatpak_ids[idx]
+        self.settings.last_flatpak = appid
+        save_settings(self.settings)
+
+        env = self._build_env()
+        extra = shlex.split(self.row_flatpak_args.get_text().strip()) if self.row_flatpak_args.get_text() else []
+        cmd = ["flatpak-spawn","--host","flatpak","run"] + self._env_to_flatpak_args(env) + [appid] + extra
+        # detach
+        subprocess.Popen(cmd)
+
+    # ------------- Host actions
+    def _on_preview_host(self, _btn):
+        target = self.row_host_cmd.get_text().strip()
+        if not target:
+            self._message(self._t("error"), self._t("host_cmd_placeholder"))
+            return
+        env = self._build_env()
+        extra = shlex.split(self.row_host_args.get_text().strip()) if self.row_host_args.get_text() else []
+        env_prefix = self._env_prefix_shell(env)
+        shell = f"{env_prefix} {shlex.quote(target)} {' '.join(shlex.quote(x) for x in extra)}"
+        cmd = ["flatpak-spawn","--host","sh","-lc", shell]
+        self._message("Preview", " ".join(shlex.quote(x) for x in cmd))
+
+    def _on_check_host(self, _btn):
+        target = self.row_host_cmd.get_text().strip()
+        if not target:
+            self._message(self._t("error"), self._t("host_cmd_placeholder"))
+            return
+        env = self._build_env()
+        env_prefix = self._env_prefix_shell(env)
+        shell = (
+            f"{env_prefix} env | grep -E '^(LSFG_|MANGOHUD=|VK_INSTANCE_LAYERS=)'; "
+            "echo; echo '=== Layer JSON on host ==='; "
+            "for d in /usr/share/vulkan/explicit_layer.d /etc/vulkan/explicit_layer.d; do "
+            "  test -d \"$d\" && grep -l -i lsfg \"$d\"/*.json 2>/dev/null || true; "
+            "done; echo OK;"
+        )
+        code, out, err = run_host(["sh","-lc", shell])
+        self._message(self._t("injection_result"), (out or "") + ("\n" + err if err else ""))
+
+    def _on_launch_host(self, _btn):
+        target = self.row_host_cmd.get_text().strip()
+        if not target:
+            self._message(self._t("error"), self._t("host_cmd_placeholder"))
+            return
+        self.settings.last_host_cmd = target
+        save_settings(self.settings)
+
+        env = self._build_env()
+        extra = shlex.split(self.row_host_args.get_text().strip()) if self.row_host_args.get_text() else []
+        env_prefix = self._env_prefix_shell(env)
+        shell = f"{env_prefix} exec {shlex.quote(target)} {' '.join(shlex.quote(x) for x in extra)}"
+        subprocess.Popen(["flatpak-spawn","--host","sh","-lc", shell])
+
+    # ------------- Favorites (save/load/run/delete)
+    def _collect_options_snapshot(self) -> dict:
+        return {
+            "multiplier": int(["2","3","4","6","8"][self.row_mult.get_selected()]),
+            "flow_scale": int(self.row_flow.get_value()),
+            "performance": self.row_perf.get_active(),
+            "hdr": self.row_hdr.get_active(),
+            "present_mode": self.row_present.get_text().strip(),
+            "lsfg_process": self.row_lsfg_proc.get_text().strip(),
+            "extra_layers": self.row_extra_layers.get_text().strip(),
+            "mangohud": self.row_mangohud.get_active(),
+            "extra_args": "",  # page-specific args handled separately
+        }
+
+    def _apply_options_snapshot(self, snap: dict):
+        mults = ["2","3","4","6","8"]
+        try:
+            self.row_mult.set_selected(mults.index(str(snap.get("multiplier", 2))))
+        except ValueError:
+            self.row_mult.set_selected(0)
+        self.row_flow.set_value(float(snap.get("flow_scale", 0)))
+        self.row_perf.set_active(bool(snap.get("performance", False)))
+        self.row_hdr.set_active(bool(snap.get("hdr", False)))
+        self.row_present.set_text(str(snap.get("present_mode", "")))
+        self.row_lsfg_proc.set_text(str(snap.get("lsfg_process", "")))
+        self.row_extra_layers.set_text(str(snap.get("extra_layers", "")))
+        self.row_mangohud.set_active(bool(snap.get("mangohud", False)))
+
+    def _on_fav_save(self, mode: str):
+        name = self.fav_name_entry.get_text().strip() or "Preset"
+        entry: dict = {"name": name, "mode": mode, "target": "", "options": self._collect_options_snapshot()}
+        if mode == "flatpak":
+            idx = int(self.dd_flatpak.get_selected())
+            entry["target"] = self._flatpak_ids[idx] if (0 <= idx < len(self._flatpak_ids)) else ""
+            entry["options"]["extra_args"] = self.row_flatpak_args.get_text().strip()
+        else:
+            entry["target"] = self.row_host_cmd.get_text().strip()
+            entry["options"]["extra_args"] = self.row_host_args.get_text().strip()
+
+        # overwrite if name+mode exists
+        replaced = False
+        for i, f in enumerate(self.settings.favorites):
+            if f.get("name")==name and f.get("mode")==mode:
+                self.settings.favorites[i] = entry
+                replaced = True
+                break
+        if not replaced:
+            self.settings.favorites.append(entry)
+            self.fav_list.append(name)
+
+        save_settings(self.settings)
+        self._message("OK", tr(self.settings.lang, "fav_exists") if replaced else tr(self.settings.lang, "fav_saved"))
+
+    def _selected_fav_entry(self, mode: str) -> dict | None:
+        idx = int(self.dd_fav.get_selected())
+        if idx < 0:
+            return None
+        # filter by mode
+        names = [f["name"] for f in self.settings.favorites if f.get("mode")==mode]
+        if idx >= len(names):
+            return None
+        name = names[idx]
+        for f in self.settings.favorites:
+            if f.get("mode")==mode and f.get("name")==name:
+                return f
+        return None
+
+    def _on_fav_load(self, mode: str):
+        fav = self._selected_fav_entry(mode)
+        if not fav:
+            return
+        self._apply_options_snapshot(fav.get("options", {}))
+        if mode == "flatpak":
+            target = fav.get("target","")
+            if target and target in self._flatpak_ids:
+                self.dd_flatpak.set_selected(self._flatpak_ids.index(target))
+            self.row_flatpak_args.set_text(fav.get("options",{}).get("extra_args",""))
+        else:
+            self.row_host_cmd.set_text(fav.get("target",""))
+            self.row_host_args.set_text(fav.get("options",{}).get("extra_args",""))
+
+    def _on_fav_run(self, mode: str):
+        self._on_fav_load(mode)
+        if mode == "flatpak":
+            self._on_launch_flatpak(None)
+        else:
+            self._on_launch_host(None)
+
+    def _on_fav_delete(self, mode: str):
+        fav = self._selected_fav_entry(mode)
+        if not fav:
+            return
+        name = fav["name"]
+        self.settings.favorites = [f for f in self.settings.favorites if not (f.get("mode")==mode and f.get("name")==name)]
+        save_settings(self.settings)
+        # rebuild dropdown model
+        new_names = [f["name"] for f in self.settings.favorites if f.get("mode")==mode]
+        self.fav_list.splice(0, self.fav_list.get_n_items(), [])
+        for n in new_names:
+            self.fav_list.append(n)
+
+# ---------------- Application ----------------
 
 class App(Adw.Application):
     def __init__(self):
         super().__init__(application_id=APP_ID, flags=Gio.ApplicationFlags.FLAGS_NONE)
+        Adw.init()
+
+        # Actions for menu
+        self._add_action("lang_en", lambda *_: self._set_lang("en"))
+        self._add_action("lang_fr", lambda *_: self._set_lang("fr"))
+        self._add_action("open_config", self._open_config)
+        self._add_action("export_settings", self._export_settings)
+        self._add_action("import_settings", self._import_settings)
+        self._add_action("reset_settings", self._reset_settings)
+        self._add_action("link_lsfg", lambda *_: self._open_url("https://github.com/PancakeTAS/lsfg-vk"))
+        self._add_action("link_mangohud", lambda *_: self._open_url("https://github.com/flightlessmango/MangoHud"))
+        self._add_action("link_goverlay", lambda *_: self._open_url("https://github.com/benjamimgois/goverlay"))
+
         self.settings = load_settings()
-        self.connect("activate", self._on_activate)
-        self._install_actions()
+        self.win: MainWindow | None = None
 
-    def _on_activate(self, *_):
-        global CURRENT_LANG
-        CURRENT_LANG = self.settings.language if self.settings.language in I18N else "fr"
-        if self.props.active_window:
-            self.props.active_window.present(); return
-        self.win = MainWindow(self, self.settings)
-        self.win.present()
+    def _add_action(self, name: str, cb):
+        act = Gio.SimpleAction.new(name, None)
+        act.connect("activate", cb)
+        self.add_action(act)
 
-    def _install_actions(self):
-        # open-link::<uri>
-        act_open_link = Gio.SimpleAction.new_stateful("open-link", GLib.VariantType.new("s"), None)
-        act_open_link.connect("activate", self._on_open_link)
-        self.add_action(act_open_link)
-
-        # set-language::fr/en
-        act_lang = Gio.SimpleAction.new_stateful("set-language", GLib.VariantType.new("s"), None)
-        act_lang.connect("activate", self._on_set_language)
-        self.add_action(act_lang)
-
-        # open-config
-        act_open_cfg = Gio.SimpleAction.new("open-config", None)
-        act_open_cfg.connect("activate", self._on_open_config)
-        self.add_action(act_open_cfg)
-
-        # export/import/reset
-        act_export = Gio.SimpleAction.new("export", None)
-        act_export.connect("activate", self._on_export)
-        self.add_action(act_export)
-
-        act_import = Gio.SimpleAction.new("import", None)
-        act_import.connect("activate", self._on_import)
-        self.add_action(act_import)
-
-        act_reset = Gio.SimpleAction.new("reset", None)
-        act_reset.connect("activate", self._on_reset)
-        self.add_action(act_reset)
-
-        # about
-        act_about = Gio.SimpleAction.new("about", None)
-        act_about.connect("activate", self._on_about)
-        self.add_action(act_about)
-
-    # --- actions impl ---
-
-    def _on_open_link(self, action, param):
-        uri = param.get_string() if param else ""
-        if uri:
-            open_uri(uri)
-
-    def _on_set_language(self, action, param):
-        global CURRENT_LANG
-        lang = param.get_string() if param else "fr"
-        if lang not in I18N:
-            lang = "fr"
-        self.settings.language = lang
+    def _set_lang(self, lang: str):
+        self.settings.lang = lang
         save_settings(self.settings)
-        CURRENT_LANG = lang
-        # rebuild window
-        if self.props.active_window:
-            self.props.active_window.destroy()
-        self.win = MainWindow(self, self.settings)
-        self.win.present()
+        # Rebuild window with new language (simple approach)
+        if self.win:
+            self.win.destroy()
+        self.do_activate()
 
-    def _on_open_config(self, *_):
-        uri = GLib.filename_to_uri(cfg_dir())
-        open_uri(uri)
+    def _open_config(self, *_):
+        Gio.AppInfo.launch_default_for_uri(f"file://{CONFIG_DIR}", None)
 
-    def _on_export(self, *_):
-        outp = os.path.join(cfg_dir(), f"settings-export-{datetime.datetime.now().strftime('%Y%m%d-%H%M%S')}.json")
+    def _export_settings(self, *_):
         try:
-            with open(outp, "w", encoding="utf-8") as f:
-                json.dump(self.settings.to_dict(), f, indent=2)
-            self._toast(t("export_ok").format(path=outp))
+            out = CONFIG_DIR / "settings.export.json"
+            out.write_text(json.dumps(asdict(self.settings), indent=2, ensure_ascii=False), encoding="utf-8")
+            self._info(tr(self.settings.lang, "export_done") + f"\n{out}")
         except Exception as e:
-            self._error("Export", str(e))
+            self._error(str(e))
 
-    def _on_import(self, *_):
-        # Simple: charger le dernier export s’il existe
-        base = cfg_dir()
-        cand = sorted([p for p in os.listdir(base) if p.startswith("settings-export-") and p.endswith(".json")])
-        if not cand:
-            self._error("Import", "Aucun fichier settings-export-*.json dans le dossier config."); return
-        path = os.path.join(base, cand[-1])
+    def _import_settings(self, *_):
         try:
-            with open(path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            self.settings = Settings.from_dict(data)
+            imp = CONFIG_DIR / "settings.export.json"
+            data = json.loads(imp.read_text(encoding="utf-8"))
+            self.settings = Settings(
+                lang=data.get("lang","fr"),
+                last_flatpak=data.get("last_flatpak",""),
+                last_host_cmd=data.get("last_host_cmd",""),
+                favorites=data.get("favorites",[]),
+                options=Options(**data.get("options",{})),
+            )
             save_settings(self.settings)
-            # rebuild
-            if self.props.active_window:
-                self.props.active_window.destroy()
-            self.win = MainWindow(self, self.settings)
-            self.win.present()
-            self._toast(t("import_ok"))
+            self._info(tr(self.settings.lang, "import_done"))
+            # Re-open window to refresh UI
+            if self.win:
+                self.win.destroy()
+            self.do_activate()
         except Exception as e:
-            self._error("Import", str(e))
+            self._error(str(e))
 
-    def _on_reset(self, *_):
-        self.settings = Settings()  # defaults
-        save_settings(self.settings)
-        if self.props.active_window:
-            self.props.active_window.destroy()
-        self.win = MainWindow(self, self.settings)
-        self.win.present()
-        self._toast(t("reset_ok"))
+    def _reset_settings(self, *_):
+        try:
+            if CONFIG_FILE.exists():
+                CONFIG_FILE.unlink()
+            self.settings = Settings()
+            save_settings(self.settings)
+            self._info(tr(self.settings.lang, "reset_done"))
+            if self.win:
+                self.win.destroy()
+            self.do_activate()
+        except Exception as e:
+            self._error(str(e))
 
-    def _on_about(self, *_):
-        dlg = Adw.AboutWindow.new()
-        dlg.set_application_name(t("app_title"))
-        dlg.set_developers(I18N[CURRENT_LANG]["devs"])
-        dlg.set_comments(t("about_desc"))
-        dlg.set_website(I18N[CURRENT_LANG]["website"])
-        dlg.set_issue_url(I18N[CURRENT_LANG]["issues"])
-        dlg.set_license_type(Gtk.License.MIT_X11)
+    def _open_url(self, url: str):
+        Gio.AppInfo.launch_default_for_uri(url, None)
+
+    def _info(self, text: str):
+        dlg = Adw.MessageDialog.new(self.get_active_window(), "Info", text)
+        dlg.add_response("ok", tr(self.settings.lang, "ok"))
+        dlg.set_close_response("ok")
         dlg.present()
 
-    # small helpers
-    def _toast(self, text: str):
-        if self.props.active_window:
-            self.props.active_window.toasts.add_toast(Adw.Toast.new(text))
+    def _error(self, text: str):
+        dlg = Adw.MessageDialog.new(self.get_active_window(), tr(self.settings.lang,"error"), text)
+        dlg.add_response("ok", tr(self.settings.lang, "ok"))
+        dlg.set_close_response("ok")
+        dlg.present()
 
-    def _error(self, title: str, body: str):
-        if self.props.active_window:
-            dlg = Adw.MessageDialog.new(self.props.active_window.get_root(), title, body)
-            dlg.add_response("ok", t("ok"))
-            dlg.set_close_response("ok")
-            dlg.present()
+    # ---- Application Lifecycle
+    def do_activate(self):
+        if not self.win:
+            self.win = MainWindow(self, self.settings)
+        self.win.present()
 
-# --- main ---------------------------------------------------------------------
-
-def main(argv):
-    Adw.init()
+def main():
     app = App()
-    return app.run(argv)
+    app.run([])
 
 if __name__ == "__main__":
-    raise SystemExit(main(sys.argv))
+    main()
